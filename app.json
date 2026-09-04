@@ -1,0 +1,32 @@
+{
+  "expo": {
+    "name": "Ratios",
+    "slug": "ratios-collage-studio",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "scheme": "ratios",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.ratios.collagestudio"
+    },
+    "android": {
+      "package": "com.ratios.collagestudio",
+      "adaptiveIcon": {
+        "backgroundColor": "#090909"
+      },
+      "edgeToEdgeEnabled": true
+    },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Ratios needs access to your photos and videos so you can build collages."
+        }
+      ],
+      "expo-document-picker",
+      "expo-media-library"
+    ]
+  }
+}

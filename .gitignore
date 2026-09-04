@@ -1,0 +1,53 @@
+# Dependencies
+node_modules/
+
+# Expo and Metro
+.expo/
+.metro-health-check*
+dist/
+web-build/
+build-output/
+
+# Continuous native generation
+android/
+ios/
+
+# Native build outputs
+*.apk
+*.aab
+*.ipa
+*.app
+
+# Signing files
+*.jks
+*.keystore
+*.p8
+*.p12
+*.pem
+*.key
+*.mobileprovision
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Logs and caches
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.tsbuildinfo
+.eslintcache
+coverage/
+
+# IDE and operating system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.orig.*
+
+# Local design references
+references/

@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "documentType": "collage-template",
+  "id": "editorial-duo",
+  "name": "Editorial duo",
+  "canvas": {
+    "aspectRatio": "4:5",
+    "background": {
+      "color": "#E7E2D8"
+    }
+  },
+  "layers": [
+    {
+      "id": "photo-primary",
+      "type": "media",
+      "name": "Primary photo",
+      "mediaKind": "any",
+      "transform": {
+        "x": 0.06,
+        "y": 0.05,
+        "width": 0.58,
+        "height": 0.9
+      }
+    },
+    {
+      "id": "photo-secondary",
+      "type": "media",
+      "name": "Secondary photo",
+      "mediaKind": "any",
+      "transform": {
+        "x": 0.68,
+        "y": 0.34,
+        "width": 0.26,
+        "height": 0.42
+      },
+      "mediaFrame": {
+        "shape": "rounded",
+        "borderRadius": 12
+      }
+    },
+    {
+      "id": "title",
+      "type": "text",
+      "name": "Title",
+      "text": "MAKE IT\nYOURS",
+      "transform": {
+        "x": 0.51,
+        "y": 0.08,
+        "width": 0.43,
+        "height": 0.2
+      },
+      "style": {
+        "fontSize": 34,
+        "fontWeight": "700",
+        "color": "#111111",
+        "textAlign": "right"
+      },
+      "animations": {
+        "entrance": {
+          "type": "rise",
+          "durationMs": 500
+        }
+      }
+    }
+  ],
+  "metadata": {
+    "author": "Ratios",
+    "category": "Editorial",
+    "tags": [
+      "minimal",
+      "portrait"
+    ]
+  }
+}
