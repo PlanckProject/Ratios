@@ -12,7 +12,6 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ProjectCard } from '../components/ProjectCard';
 import { colors, radius } from '../constants/theme';
-import { exportCollageJson } from '../services/jsonTransfer';
 import { useCollages } from '../store/CollageProvider';
 import type { CollageProject } from '../types/collage';
 
@@ -78,9 +77,6 @@ export function ProjectsScreen({
           <ProjectCard
             onDelete={() => removeProject(item.id)}
             onDuplicate={() => duplicateProject(item.id)}
-            onExport={() => {
-              void exportCollageJson(item);
-            }}
             onOpen={() => onOpenProject(item)}
             project={item}
             width={cardWidth}

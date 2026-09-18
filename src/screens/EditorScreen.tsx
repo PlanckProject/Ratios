@@ -9,14 +9,13 @@ import {
   StyleSheet,
   Text,
   TextInput,
-  useWindowDimensions,
   View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BottomSheet } from '../components/BottomSheet';
-import { CollageCanvas } from '../components/CollageCanvas';
 import { IconButton } from '../components/IconButton';
+import { PageStrip } from '../components/PageStrip';
 import { ASPECT_RATIOS, ASPECT_RATIO_IDS } from '../constants/ratios';
 import { colors, radius } from '../constants/theme';
 import { exportCollageJson } from '../services/jsonTransfer';
@@ -41,22 +40,27 @@ import {
   createShapeLayer,
   createTextLayer,
   gridLayers,
+  getPageOrder,
   projectToTemplate,
+  snapLayerTransform,
   updateDocumentLayers,
 } from '../utils/collage';
 
-type SheetId =
-  | 'add'
-  | 'background'
-  | 'layers'
-  | 'ratio'
-  | 'grid'
-  | 'text'
-  | 'media'
-  | 'shape'
-  | 'arrange'
-  | 'json'
-  | null;
+const SHEET_TITLES = {
+  add: 'New layer',
+  background: 'Background',
+  layers: 'Layers',
+  ratio: 'Canvas ratio',
+  grid: 'Add a grid',
+  text: 'Edit text',
+  media: 'Crop',
+  transform: 'Transform',
+  shape: 'Shape',
+  arrange: 'Arrange',
+  json: 'Project JSON',
+} as const;
+
+type SheetId = keyof typeof SHEET_TITLES | null;
 
 const BACKGROUND_COLORS = [
   '#F4F1EA',
@@ -88,7 +92,6 @@ export function EditorScreen({
   onBack,
   onExport,
 }: EditorScreenProps): React.JSX.Element {
-  const { height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const { projects, updateProject } = useCollages();
   const sourceProject = projects.find((project) => project.id === projectId);
@@ -105,6 +108,7 @@ export function EditorScreen({
   const [textDraft, setTextDraft] = useState('');
   const [nameDraft, setNameDraft] = useState(document.name);
   const [previewing, setPreviewing] = useState(false);
+  const [focusedPageIndex, setFocusedPageIndex] = useState(0);
 
   useEffect(() => {
     if (sourceProject && sourceProject.id !== documentRef.current.id) {
@@ -113,12 +117,13 @@ export function EditorScreen({
       setSelectedLayerId(null);
       setPast([]);
       setFuture([]);
+      setFocusedPageIndex(0);
     }
   }, [sourceProject]);
 
   useEffect(() => {
     documentRef.current = document;
-    if (!sourceProject) {
+    if (!sourceProject || sourceProject === document) {
       return;
     }
     const timer = setTimeout(() => updateProject(document), 220);
@@ -153,63 +158,53 @@ export function EditorScreen({
 
   const updateLayer = useCallback(
     (layerId: string, updater: (layer: CollageLayer) => CollageLayer) => {
-      commit((current) =>
-        updateDocumentLayers(
-          current,
-          current.layers.map((layer) => (layer.id === layerId ? updater(layer) : layer)),
-        ),
-      );
+      commit((current) => {
+        const nextLayers = current.layers.map((layer) => {
+          if (layer.id !== layerId) {
+            return layer;
+          }
+          const nextLayer = updater(layer);
+          return {
+            ...nextLayer,
+            transform: snapLayerTransform(current, layerId, nextLayer.transform),
+          };
+        });
+        return updateDocumentLayers(current, nextLayers);
+      });
     },
     [commit],
   );
 
-  const updateTransform = useCallback((layerId: string, transform: LayerTransform) => {
+  const updateTransform = useCallback((layerId: string, transform: LayerTransform): LayerTransform => {
     transformChanged.current = true;
-    setDocument((current) => {
-      const normalizedTransform = current.editor.snapToGrid
-        ? {
-            ...transform,
-            x:
-              Math.round(
-                transform.x / (current.editor.gridSize / current.canvas.width),
-              ) *
-              (current.editor.gridSize / current.canvas.width),
-            y:
-              Math.round(
-                transform.y / (current.editor.gridSize / current.canvas.height),
-              ) *
-              (current.editor.gridSize / current.canvas.height),
-            width:
-              Math.round(
-                transform.width / (current.editor.gridSize / current.canvas.width),
-              ) *
-              (current.editor.gridSize / current.canvas.width),
-            height:
-              Math.round(
-                transform.height / (current.editor.gridSize / current.canvas.height),
-              ) *
-              (current.editor.gridSize / current.canvas.height),
-          }
-        : transform;
-      const next = {
-        ...current,
-        updatedAt: new Date().toISOString(),
-        layers: current.layers.map((layer) =>
-          layer.id === layerId
-            ? {
-                ...layer,
-                transform: normalizedTransform,
-                metadata: {
-                  ...layer.metadata,
-                  updatedAt: new Date().toISOString(),
-                },
-              }
-            : layer,
-        ),
-      };
-      documentRef.current = next;
-      return next;
-    });
+    const current = documentRef.current;
+    const layer = current.layers.find((item) => item.id === layerId);
+    const normalizedTransform = layer
+      ? snapLayerTransform(current, layerId, {
+          ...transform,
+          width: Math.max(transform.width, 0.01),
+          height: Math.max(transform.height, 0.01),
+        })
+      : transform;
+    const next = {
+      ...current,
+      updatedAt: new Date().toISOString(),
+      layers: current.layers.map((currentLayer) =>
+        currentLayer.id === layerId
+          ? {
+              ...currentLayer,
+              transform: normalizedTransform,
+              metadata: {
+                ...currentLayer.metadata,
+                updatedAt: new Date().toISOString(),
+              },
+            }
+          : currentLayer,
+      ),
+    };
+    documentRef.current = next;
+    setDocument(next);
+    return normalizedTransform;
   }, []);
 
   const beginTransform = useCallback(() => {
@@ -218,8 +213,9 @@ export function EditorScreen({
   }, []);
 
   const finishTransform = useCallback(() => {
-    if (transformChanged.current && transformSnapshot.current) {
-      setPast((items) => [...items.slice(-39), transformSnapshot.current!]);
+    const snapshot = transformSnapshot.current;
+    if (transformChanged.current && snapshot) {
+      setPast((items) => [...items.slice(-39), snapshot]);
       setFuture([]);
     }
     transformSnapshot.current = null;
@@ -261,6 +257,119 @@ export function EditorScreen({
     onExport();
   };
 
+  const pageCount = Math.max(1, document.canvas.pageCount ?? 1);
+  const pageOrder = useMemo(() => getPageOrder(document), [document.canvas]);
+
+  const addPage = () => {
+    if (pageCount >= 20) {
+      Alert.alert('Page limit reached', 'A project can contain up to 20 final pages.');
+      return;
+    }
+    commit((current) => ({
+      ...current,
+      canvas: {
+        ...current.canvas,
+        pageCount: (current.canvas.pageCount ?? 1) + 1,
+        pageOrder: [...getPageOrder(current), current.canvas.pageCount ?? 1],
+      },
+    }));
+    setFocusedPageIndex(pageCount);
+    setSelectedLayerId(null);
+  };
+
+  const deletePage = (pageIndexToDelete: number) => {
+    if (pageCount <= 1) {
+      return;
+    }
+
+    const hasContent = documentRef.current.layers.some((layer) => {
+      const layerStart = layer.transform.x;
+      const layerEnd = layerStart + layer.transform.width;
+      return layerStart < pageIndexToDelete + 1 && layerEnd > pageIndexToDelete;
+    });
+    const nextPageCount = Math.max(pageCount - 1, 1);
+
+    const performDelete = () => {
+      commit((current) => {
+        const nextLayers = current.layers
+          .filter((layer) => {
+            const layerStart = layer.transform.x;
+            const layerEnd = layerStart + layer.transform.width;
+            const fullyWithinPage =
+              layerStart >= pageIndexToDelete && layerEnd <= pageIndexToDelete + 1;
+            return !fullyWithinPage;
+          })
+          .map((layer) =>
+            layer.transform.x >= pageIndexToDelete + 1
+              ? {
+                  ...layer,
+                  transform: {
+                    ...layer.transform,
+                    x: layer.transform.x - 1,
+                  },
+                }
+              : layer,
+          );
+        const nextPageOrder = getPageOrder(current)
+          .filter((page) => page !== pageIndexToDelete)
+          .map((page) => (page > pageIndexToDelete ? page - 1 : page));
+        return updateDocumentLayers(
+          {
+            ...current,
+            canvas: {
+              ...current.canvas,
+              pageCount: nextPageCount,
+              pageOrder: nextPageOrder,
+            },
+          },
+          nextLayers,
+        );
+      });
+      setFocusedPageIndex((current) => {
+        if (current === pageIndexToDelete) {
+          return Math.min(current, nextPageCount - 1);
+        }
+        return current > pageIndexToDelete ? current - 1 : current;
+      });
+      setSelectedLayerId(null);
+    };
+
+    if (hasContent) {
+      Alert.alert(
+        'Delete page?',
+        'This page contains media or design elements. Items fully contained on this page will be deleted; overlapping items will be kept.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Delete page', onPress: performDelete, style: 'destructive' },
+        ],
+      );
+      return;
+    }
+    performDelete();
+  };
+
+  const reorderPages = (fromPageIndex: number, toDisplayIndex: number) => {
+    commit((current) => {
+      const nextPageOrder = [...getPageOrder(current)];
+      const fromDisplayIndex = nextPageOrder.indexOf(fromPageIndex);
+      if (fromDisplayIndex < 0 || fromDisplayIndex === toDisplayIndex) {
+        return current;
+      }
+      const [page] = nextPageOrder.splice(fromDisplayIndex, 1);
+      if (page === undefined) {
+        return current;
+      }
+      nextPageOrder.splice(toDisplayIndex, 0, page);
+      return {
+        ...current,
+        canvas: {
+          ...current.canvas,
+          pageOrder: nextPageOrder,
+        },
+      };
+    });
+  };
+
   const addLayer = (layer: CollageLayer) => {
     if (documentRef.current.layers.length >= 200) {
       Alert.alert('Layer limit reached', 'A collage can contain up to 200 layers.');
@@ -269,6 +378,17 @@ export function EditorScreen({
     commit((current) => updateDocumentLayers(current, [...current.layers, layer]));
     setSelectedLayerId(layer.id);
   };
+
+  const placeLayerOnPage = <T extends CollageLayer>(
+    layer: T,
+    targetPage = focusedPageIndex,
+  ): T => ({
+    ...layer,
+    transform: {
+      ...layer.transform,
+      x: layer.transform.x + targetPage,
+    },
+  });
 
   const deleteLayer = useCallback(
     (layerId: string) => {
@@ -295,7 +415,7 @@ export function EditorScreen({
         name: `${source.name} copy`,
         transform: {
           ...source.transform,
-          x: clamp(source.transform.x + 0.035, -0.2, 0.95),
+          x: clamp(source.transform.x + 0.035, -0.2, pageCount - 0.05),
           y: clamp(source.transform.y + 0.035, -0.2, 0.95),
         },
         metadata: {
@@ -306,7 +426,7 @@ export function EditorScreen({
       };
       addLayer(duplicate);
     },
-    [commit],
+    [commit, pageCount],
   );
 
   const toggleLayerLock = useCallback(
@@ -319,6 +439,31 @@ export function EditorScreen({
   const toggleLayerVisibility = (layerId: string) => {
     updateLayer(layerId, (layer) => ({ ...layer, visible: !layer.visible }));
   };
+
+  const clearMedia = useCallback(
+    (layerId: string) => {
+      updateLayer(layerId, (layer) =>
+        layer.type === 'media'
+          ? {
+              ...layer,
+              name: layer.mediaKind === 'video' ? 'Video' : 'Media',
+              source: undefined,
+            }
+          : layer,
+      );
+    },
+    [updateLayer],
+  );
+
+  const toggleSnap = useCallback(() => {
+    commit((current) => ({
+      ...current,
+      editor: {
+        ...current.editor,
+        snapMediaSize: !current.editor.snapMediaSize,
+      },
+    }));
+  }, [commit]);
 
   const moveLayer = (layerId: string, destination: 'front' | 'back' | 'forward' | 'backward') => {
     commit((current) => {
@@ -367,7 +512,7 @@ export function EditorScreen({
               : ImagePicker.MediaTypeOptions.All;
         const result = await ImagePicker.launchImageLibraryAsync({
           allowsEditing: false,
-          allowsMultipleSelection: false,
+          allowsMultipleSelection: !targetLayerId,
           mediaTypes,
           quality: 1,
           videoMaxDuration: 120,
@@ -375,40 +520,57 @@ export function EditorScreen({
         if (result.canceled) {
           return;
         }
-        const asset = result.assets[0];
-        if (!asset) {
+        const [firstAsset] = result.assets;
+        if (!firstAsset) {
           throw new Error('The selected media could not be read.');
         }
-        const detectedKind: MediaKind = asset.type === 'video' ? 'video' : 'image';
-        const source = await persistPickedAsset(asset);
 
         const target = targetLayerId
           ? documentRef.current.layers.find((layer) => layer.id === targetLayerId)
           : null;
         if (target?.type === 'media') {
+          const detectedKind: MediaKind =
+            firstAsset.type === 'video' ? 'video' : 'image';
+          const source = await persistPickedAsset(firstAsset);
           updateLayer(target.id, (layer) =>
             layer.type === 'media'
               ? {
                   ...layer,
                   mediaKind: detectedKind,
-                  name: asset.fileName ?? (detectedKind === 'video' ? 'Video' : 'Image'),
+                  name:
+                    firstAsset.fileName ??
+                    (detectedKind === 'video' ? 'Video' : 'Image'),
                   source,
                 }
               : layer,
           );
           setSelectedLayerId(target.id);
         } else {
-          const layer = createMediaLayer(detectedKind, {
-            x: 0.12,
-            y: 0.18,
-            width: 0.76,
-            height: 0.56,
-          });
-          addLayer({
-            ...layer,
-            name: asset.fileName ?? (detectedKind === 'video' ? 'Video' : 'Image'),
-            source,
-          });
+          if (documentRef.current.layers.length + result.assets.length > 200) {
+            Alert.alert('Layer limit reached', 'A collage can contain up to 200 layers.');
+            return;
+          }
+          const newLayers: CollageLayer[] = [];
+          for (const [index, asset] of result.assets.entries()) {
+            const detectedKind: MediaKind = asset.type === 'video' ? 'video' : 'image';
+            const source = await persistPickedAsset(asset);
+            const layer = createMediaLayer(detectedKind, {
+              x: focusedPageIndex + clamp(0.08 + (index % 3) * 0.12, -0.2, 0.95),
+              y: clamp(0.12 + Math.floor(index / 3) * 0.1, -0.2, 0.95),
+              width: result.assets.length === 1 ? 0.76 : 0.62,
+              height: result.assets.length === 1 ? 0.56 : 0.46,
+            });
+            newLayers.push({
+              ...layer,
+              name:
+                asset.fileName ?? (detectedKind === 'video' ? 'Video' : 'Image'),
+              source,
+            });
+          }
+          commit((current) =>
+            updateDocumentLayers(current, [...current.layers, ...newLayers]),
+          );
+          setSelectedLayerId(newLayers.at(-1)?.id ?? null);
         }
         setSheet(null);
       } catch (error: unknown) {
@@ -418,24 +580,34 @@ export function EditorScreen({
         );
       }
     },
-    [updateLayer],
+    [commit, focusedPageIndex, updateLayer],
+  );
+
+  const requestFill = useCallback(
+    (layerId: string) => {
+      const layer = documentRef.current.layers.find((item) => item.id === layerId);
+      if (layer?.type === 'media') {
+        void pickMedia(layer.mediaKind, layer.id);
+      }
+    },
+    [pickMedia],
   );
 
   const addText = () => {
-    const layer = createTextLayer('Your story');
+    const layer = placeLayerOnPage(createTextLayer('Your story'));
     addLayer(layer);
     setTextDraft(layer.text);
     setSheet('text');
   };
 
   const addShape = () => {
-    const layer = createShapeLayer();
+    const layer = placeLayerOnPage(createShapeLayer());
     addLayer(layer);
     setSheet('shape');
   };
 
   const applyGrid = (preset: Parameters<typeof gridLayers>[0]) => {
-    const layers = gridLayers(preset);
+    const layers = gridLayers(preset).map((layer) => placeLayerOnPage(layer));
     if (documentRef.current.layers.length + layers.length > 200) {
       Alert.alert('Layer limit reached', 'This grid would exceed the 200-layer limit.');
       return;
@@ -459,6 +631,12 @@ export function EditorScreen({
     }
   };
 
+  const openTransformEditor = () => {
+    if (selectedLayer) {
+      setSheet('transform');
+    }
+  };
+
   const setMediaAspect = (aspect: MediaLayer['crop']['aspectRatio']) => {
     if (selectedLayer?.type !== 'media') {
       return;
@@ -476,12 +654,11 @@ export function EditorScreen({
         numericRatio = (width ?? 1) / (heightValue ?? 1);
       }
       const nextHeight = numericRatio
-        ? clamp(
+        ? Math.max(
             (layer.transform.width * currentDocument.canvas.width) /
               numericRatio /
               currentDocument.canvas.height,
-            0.06,
-            1.2,
+            0.01,
           )
         : layer.transform.height;
       return {
@@ -540,7 +717,8 @@ export function EditorScreen({
             {document.name}
           </Text>
           <Text style={styles.projectMeta}>
-            {document.canvas.aspectRatio} · {document.layers.length} layers
+            {document.canvas.aspectRatio} · {pageCount} page{pageCount === 1 ? '' : 's'} ·{' '}
+            {document.layers.length} layers
           </Text>
         </View>
         <View style={styles.topActions}>
@@ -555,25 +733,26 @@ export function EditorScreen({
       </View>
 
       <View style={styles.workspace}>
-        <CollageCanvas
-          animate={previewing}
+        <PageStrip
           document={document}
-          editable
-          maxHeight={Math.max(260, height - 245 - insets.top - insets.bottom)}
+          focusedPageIndex={focusedPageIndex}
+          onAddPage={addPage}
           onDeleteLayer={deleteLayer}
+          onDeletePage={deletePage}
           onDuplicateLayer={duplicateLayer}
-          onRequestFill={(layerId) => {
-            const layer = documentRef.current.layers.find((item) => item.id === layerId);
-            if (layer?.type === 'media') {
-              void pickMedia(layer.mediaKind, layer.id);
-            }
-          }}
+          onFocusPage={setFocusedPageIndex}
+          onReorderPages={reorderPages}
+          onRequestFill={requestFill}
           onSelectLayer={setSelectedLayerId}
           onToggleLock={toggleLayerLock}
+          onToggleSnap={toggleSnap}
           onTransformEnd={finishTransform}
           onTransformStart={beginTransform}
           onUpdateTransform={updateTransform}
+          pageOrder={pageOrder}
+          previewing={previewing}
           selectedLayerId={selectedLayerId}
+          snapEnabled={document.editor.snapMediaSize}
         />
       </View>
 
@@ -587,8 +766,8 @@ export function EditorScreen({
             />
             <DockAction
               icon="resize-outline"
-              label="Resize"
-              onPress={openSelectedEditor}
+              label="Transform"
+              onPress={openTransformEditor}
             />
             <DockAction
               icon="layers-outline"
@@ -596,16 +775,18 @@ export function EditorScreen({
               onPress={() => setSheet('arrange')}
             />
             <DockAction
-              icon="copy-outline"
-              label="Duplicate"
-              onPress={() => duplicateLayer(selectedLayer.id)}
-            />
-            <DockAction
               danger
               icon="trash-outline"
               label="Delete"
               onPress={() => deleteLayer(selectedLayer.id)}
             />
+            {selectedLayer.type === 'media' ? (
+              <DockAction
+                icon="close-circle-outline"
+                label="Clear"
+                onPress={() => clearMedia(selectedLayer.id)}
+              />
+            ) : null}
             <IconButton
               icon="close"
               onPress={() => setSelectedLayerId(null)}
@@ -642,218 +823,200 @@ export function EditorScreen({
         )}
       </View>
 
-      <BottomSheet onClose={() => setSheet(null)} title="New layer" visible={sheet === 'add'}>
-        <View style={styles.actionGrid}>
-          <ActionTile
-            icon="image-outline"
-            label="Image"
-            onPress={() => {
-              void pickMedia('image');
-            }}
-          />
-          <ActionTile
-            icon="play-outline"
-            label="Video"
-            onPress={() => {
-              void pickMedia('video');
-            }}
-          />
-          <ActionTile icon="text-outline" label="Text" onPress={addText} />
-          <ActionTile icon="grid-outline" label="Grid" onPress={() => setSheet('grid')} />
-          <ActionTile icon="shapes-outline" label="Shape" onPress={addShape} />
-        </View>
-      </BottomSheet>
-
-      <BottomSheet
-        onClose={() => setSheet(null)}
-        title="Background"
-        visible={sheet === 'background'}
-      >
-        <Text style={styles.sheetLabel}>Canvas color</Text>
-        <View style={styles.swatches}>
-          {BACKGROUND_COLORS.map((color) => (
-            <Pressable
-              accessibilityLabel={`Set background to ${color}`}
-              key={color}
-              onPress={() =>
-                commit((current) => ({
-                  ...current,
-                  canvas: {
-                    ...current.canvas,
-                    background: {
-                      ...current.canvas.background,
-                      type: 'color',
-                      color,
-                    },
-                  },
-                }))
-              }
-              style={[
-                styles.swatch,
-                { backgroundColor: color },
-                document.canvas.background.color === color && styles.swatchSelected,
-              ]}
-            />
-          ))}
-        </View>
-        <Text style={styles.sheetLabel}>Guides</Text>
-        <SettingRow
-          active={document.editor.showGrid}
-          icon="grid-outline"
-          label="Rule of thirds"
-          onPress={() =>
-            commit((current) => ({
-              ...current,
-              editor: {
-                ...current.editor,
-                showGrid: !current.editor.showGrid,
-              },
-            }))
-          }
-        />
-        <SettingRow
-          active={document.editor.showSafeArea}
-          icon="scan-outline"
-          label="Safe area"
-          onPress={() =>
-            commit((current) => ({
-              ...current,
-              editor: {
-                ...current.editor,
-                showSafeArea: !current.editor.showSafeArea,
-              },
-            }))
-          }
-        />
-        <SettingRow
-          active={document.editor.snapToGrid}
-          icon="magnet-outline"
-          label="Snap to grid"
-          onPress={() =>
-            commit((current) => ({
-              ...current,
-              editor: {
-                ...current.editor,
-                snapToGrid: !current.editor.snapToGrid,
-              },
-            }))
-          }
-        />
-      </BottomSheet>
-
-      <BottomSheet onClose={() => setSheet(null)} title="Layers" visible={sheet === 'layers'}>
-        <Text style={styles.sheetHint}>Top layers appear first. Use arrows for precise ordering.</Text>
-        {[...document.layers].reverse().map((layer) => (
-          <Pressable
-            key={layer.id}
-            onPress={() => setSelectedLayerId(layer.id)}
-            style={[
-              styles.layerRow,
-              selectedLayerId === layer.id && styles.layerRowSelected,
-              !layer.visible && styles.layerRowHidden,
-            ]}
-          >
-            <View style={styles.layerIcon}>
-              <Ionicons color={colors.text} name={layerIcon(layer)} size={20} />
-            </View>
-            <View style={styles.layerCopy}>
-              <Text numberOfLines={1} style={styles.layerName}>
-                {layer.name}
-              </Text>
-              <Text style={styles.layerType}>{layer.type}</Text>
-            </View>
-            <IconButton
-              icon={layer.visible ? 'eye-outline' : 'eye-off-outline'}
-              onPress={() => toggleLayerVisibility(layer.id)}
-              size={18}
-            />
-            <IconButton
-              icon={layer.locked ? 'lock-closed' : 'lock-open-outline'}
-              onPress={() => toggleLayerLock(layer.id)}
-              size={18}
-            />
-            <IconButton
-              icon="arrow-up"
-              onPress={() => moveLayer(layer.id, 'forward')}
-              size={18}
-            />
-            <IconButton
-              icon="arrow-down"
-              onPress={() => moveLayer(layer.id, 'backward')}
-              size={18}
-            />
-          </Pressable>
-        ))}
-        {!document.layers.length ? (
-          <Text style={styles.emptySheet}>Add media, text, a shape, or a grid to begin.</Text>
-        ) : null}
-      </BottomSheet>
-
-      <BottomSheet
-        onClose={() => setSheet(null)}
-        title="Canvas ratio"
-        visible={sheet === 'ratio'}
-      >
-        <View style={styles.ratioList}>
-          {ASPECT_RATIO_IDS.map((id) => {
-            const ratio = ASPECT_RATIOS[id];
-            return (
-              <Pressable
-                key={id}
+      {sheet ? (
+        <BottomSheet onClose={() => setSheet(null)} title={SHEET_TITLES[sheet]}>
+          {sheet === 'add' ? (
+            <View style={styles.actionGrid}>
+              <ActionTile
+                icon="image-outline"
+                label="Images"
                 onPress={() => {
-                  commit((current) => changeCanvasRatio(current, id));
-                  setSheet(null);
+                  void pickMedia('image');
                 }}
-                style={[
-                  styles.ratioOption,
-                  document.canvas.aspectRatio === id && styles.ratioOptionSelected,
-                ]}
-              >
-                <RatioGlyph id={id} />
-                <View style={styles.ratioOptionCopy}>
-                  <Text style={styles.ratioOptionLabel}>{ratio.label}</Text>
-                  <Text style={styles.ratioOptionUse}>{ratio.use}</Text>
-                </View>
-                {document.canvas.aspectRatio === id ? (
-                  <Ionicons color={colors.accent} name="checkmark-circle" size={22} />
-                ) : null}
-              </Pressable>
-            );
-          })}
-        </View>
-      </BottomSheet>
-
-      <BottomSheet onClose={() => setSheet(null)} title="Add a grid" visible={sheet === 'grid'}>
-        <View style={styles.gridChoices}>
-          <GridChoice label="Two columns" onPress={() => applyGrid('two-columns')} preset="columns" />
-          <GridChoice label="Two rows" onPress={() => applyGrid('two-rows')} preset="rows" />
-          <GridChoice label="Four grid" onPress={() => applyGrid('four-grid')} preset="four" />
-          <GridChoice label="Feature" onPress={() => applyGrid('feature')} preset="feature" />
-        </View>
-      </BottomSheet>
-
-      <BottomSheet onClose={() => setSheet(null)} title="Edit text" visible={sheet === 'text'}>
-        {selectedLayer?.type === 'text' ? (
-          <>
-            <TextInput
-              multiline
-              onChangeText={setTextDraft}
-              placeholder="Enter text"
-              placeholderTextColor={colors.textMuted}
-              style={styles.textEditor}
-              value={textDraft}
-            />
-            <Text style={styles.sheetLabel}>Size</Text>
-            <View style={styles.chipRow}>
-              {[22, 30, 42, 56].map((fontSize) => (
-                <ChoiceChip
-                  active={selectedLayer.style.fontSize === fontSize}
-                  key={fontSize}
-                  label={`${fontSize}`}
-                  onPress={() =>
-                    updateLayer(selectedLayer.id, (layer) =>
-                      layer.type === 'text'
-                        ? {
+              />
+              <ActionTile
+                icon="play-outline"
+                label="Video"
+                onPress={() => {
+                  void pickMedia('video');
+                }}
+              />
+              <ActionTile icon="text-outline" label="Text" onPress={addText} />
+              <ActionTile icon="grid-outline" label="Grid" onPress={() => setSheet('grid')} />
+              <ActionTile icon="shapes-outline" label="Shape" onPress={addShape} />
+            </View>
+          ) : null}
+          {sheet === 'background' ? (
+            <>
+              <Text style={styles.sheetLabel}>Canvas color</Text>
+              <View style={styles.swatches}>
+                {BACKGROUND_COLORS.map((color) => (
+                  <Pressable
+                    accessibilityLabel={`Set background to ${color}`}
+                    key={color}
+                    onPress={() =>
+                      commit((current) => ({
+                        ...current,
+                        canvas: {
+                          ...current.canvas,
+                          background: {
+                            ...current.canvas.background,
+                            type: 'color',
+                            color,
+                          },
+                        },
+                      }))
+                    }
+                    style={[
+                      styles.swatch,
+                      { backgroundColor: color },
+                      document.canvas.background.color === color && styles.swatchSelected,
+                    ]}
+                  />
+                ))}
+              </View>
+              <Text style={styles.sheetLabel}>Guides</Text>
+              <SettingRow
+                active={document.editor.showGrid}
+                icon="grid-outline"
+                label="Rule of thirds"
+                onPress={() =>
+                  commit((current) => ({
+                    ...current,
+                    editor: {
+                      ...current.editor,
+                      showGrid: !current.editor.showGrid,
+                    },
+                  }))
+                }
+              />
+              <SettingRow
+                active={document.editor.showSafeArea}
+                icon="scan-outline"
+                label="Safe area"
+                onPress={() =>
+                  commit((current) => ({
+                    ...current,
+                    editor: {
+                      ...current.editor,
+                      showSafeArea: !current.editor.showSafeArea,
+                    },
+                  }))
+                }
+              />
+              <Text style={styles.sheetHint}>
+                Guides are visual only, so layers can move and overlap freely. Media size snapping is
+                available when editing a media layer.
+              </Text>
+            </>
+          ) : null}
+          {sheet === 'layers' ? (
+            <>
+              <Text style={styles.sheetHint}>Top layers appear first. Use arrows for precise ordering.</Text>
+              {[...document.layers].reverse().map((layer) => (
+                <Pressable
+                  key={layer.id}
+                  onPress={() => setSelectedLayerId(layer.id)}
+                  style={[
+                    styles.layerRow,
+                    selectedLayerId === layer.id && styles.layerRowSelected,
+                    !layer.visible && styles.layerRowHidden,
+                  ]}
+                >
+                  <View style={styles.layerIcon}>
+                    <Ionicons color={colors.text} name={layerIcon(layer)} size={20} />
+                  </View>
+                  <View style={styles.layerCopy}>
+                    <Text numberOfLines={1} style={styles.layerName}>
+                      {layer.name}
+                    </Text>
+                    <Text style={styles.layerType}>{layer.type}</Text>
+                  </View>
+                  <IconButton
+                    icon={layer.visible ? 'eye-outline' : 'eye-off-outline'}
+                    onPress={() => toggleLayerVisibility(layer.id)}
+                    size={18}
+                  />
+                  <IconButton
+                    icon={layer.locked ? 'lock-closed' : 'lock-open-outline'}
+                    onPress={() => toggleLayerLock(layer.id)}
+                    size={18}
+                  />
+                  <IconButton
+                    icon="arrow-up"
+                    onPress={() => moveLayer(layer.id, 'forward')}
+                    size={18}
+                  />
+                  <IconButton
+                    icon="arrow-down"
+                    onPress={() => moveLayer(layer.id, 'backward')}
+                    size={18}
+                  />
+                </Pressable>
+              ))}
+              {!document.layers.length ? (
+                <Text style={styles.emptySheet}>Add media, text, a shape, or a grid to begin.</Text>
+              ) : null}
+            </>
+          ) : null}
+          {sheet === 'ratio' ? (
+            <View style={styles.ratioList}>
+              {ASPECT_RATIO_IDS.map((id) => {
+                const ratio = ASPECT_RATIOS[id];
+                return (
+                  <Pressable
+                    key={id}
+                    onPress={() => {
+                      commit((current) => changeCanvasRatio(current, id));
+                      setSheet(null);
+                    }}
+                    style={[
+                      styles.ratioOption,
+                      document.canvas.aspectRatio === id && styles.ratioOptionSelected,
+                    ]}
+                  >
+                    <RatioGlyph id={id} />
+                    <View style={styles.ratioOptionCopy}>
+                      <Text style={styles.ratioOptionLabel}>{ratio.label}</Text>
+                      <Text style={styles.ratioOptionUse}>{ratio.use}</Text>
+                    </View>
+                    {document.canvas.aspectRatio === id ? (
+                      <Ionicons color={colors.accent} name="checkmark-circle" size={22} />
+                    ) : null}
+                  </Pressable>
+                );
+              })}
+            </View>
+          ) : null}
+          {sheet === 'grid' ? (
+            <View style={styles.gridChoices}>
+              <GridChoice label="Two columns" onPress={() => applyGrid('two-columns')} preset="columns" />
+              <GridChoice label="Two rows" onPress={() => applyGrid('two-rows')} preset="rows" />
+              <GridChoice label="Four grid" onPress={() => applyGrid('four-grid')} preset="four" />
+              <GridChoice label="Feature" onPress={() => applyGrid('feature')} preset="feature" />
+            </View>
+          ) : null}
+          {sheet === 'text' && selectedLayer?.type === 'text' ? (
+            <>
+              <TextInput
+                multiline
+                onChangeText={setTextDraft}
+                placeholder="Enter text"
+                placeholderTextColor={colors.textMuted}
+                style={styles.textEditor}
+                value={textDraft}
+              />
+              <Text style={styles.sheetLabel}>Size</Text>
+              <View style={styles.chipRow}>
+                {[22, 30, 42, 56].map((fontSize) => (
+                  <ChoiceChip
+                    active={selectedLayer.style.fontSize === fontSize}
+                    key={fontSize}
+                    label={`${fontSize}`}
+                    onPress={() =>
+                      updateLayer(selectedLayer.id, (layer) =>
+                        layer.type === 'text'
+                          ? {
                             ...layer,
                             style: {
                               ...layer.style,
@@ -861,77 +1024,77 @@ export function EditorScreen({
                               lineHeight: Math.round(fontSize * 1.14),
                             },
                           }
-                        : layer,
-                    )
-                  }
-                />
-              ))}
-            </View>
-            <Text style={styles.sheetLabel}>Color</Text>
-            <View style={styles.swatches}>
-              {TEXT_COLORS.map((color) => (
-                <Pressable
-                  key={color}
-                  onPress={() =>
-                    updateLayer(selectedLayer.id, (layer) =>
-                      layer.type === 'text'
-                        ? { ...layer, style: { ...layer.style, color } }
-                        : layer,
-                    )
-                  }
-                  style={[
-                    styles.swatch,
-                    { backgroundColor: color },
-                    selectedLayer.style.color === color && styles.swatchSelected,
-                  ]}
-                />
-              ))}
-            </View>
-            <Text style={styles.sheetLabel}>Alignment</Text>
-            <View style={styles.chipRow}>
-              {(['left', 'center', 'right'] as const).map((alignment) => (
-                <ChoiceChip
-                  active={selectedLayer.style.textAlign === alignment}
-                  key={alignment}
-                  label={alignment}
-                  onPress={() =>
-                    updateLayer(selectedLayer.id, (layer) =>
-                      layer.type === 'text'
-                        ? {
+                          : layer,
+                      )
+                    }
+                  />
+                ))}
+              </View>
+              <Text style={styles.sheetLabel}>Color</Text>
+              <View style={styles.swatches}>
+                {TEXT_COLORS.map((color) => (
+                  <Pressable
+                    key={color}
+                    onPress={() =>
+                      updateLayer(selectedLayer.id, (layer) =>
+                        layer.type === 'text'
+                          ? { ...layer, style: { ...layer.style, color } }
+                          : layer,
+                      )
+                    }
+                    style={[
+                      styles.swatch,
+                      { backgroundColor: color },
+                      selectedLayer.style.color === color && styles.swatchSelected,
+                    ]}
+                  />
+                ))}
+              </View>
+              <Text style={styles.sheetLabel}>Alignment</Text>
+              <View style={styles.chipRow}>
+                {(['left', 'center', 'right'] as const).map((alignment) => (
+                  <ChoiceChip
+                    active={selectedLayer.style.textAlign === alignment}
+                    key={alignment}
+                    label={alignment}
+                    onPress={() =>
+                      updateLayer(selectedLayer.id, (layer) =>
+                        layer.type === 'text'
+                          ? {
                             ...layer,
                             style: {
                               ...layer.style,
                               textAlign: alignment,
                             },
                           }
-                        : layer,
-                    )
-                  }
-                />
-              ))}
-            </View>
-            <Text style={styles.sheetLabel}>Animation</Text>
-            <View style={styles.chipRow}>
-              {TEXT_ANIMATIONS.map((animationType) => {
-                const active =
-                  (selectedLayer.animations.loop ?? selectedLayer.animations.entrance)?.type ===
-                  animationType;
-                return (
-                  <ChoiceChip
-                    active={active}
-                    key={animationType}
-                    label={animationType}
-                    onPress={() =>
-                      updateLayer(selectedLayer.id, (layer) => {
-                        if (layer.type !== 'text') {
-                          return layer;
-                        }
-                        return {
-                          ...layer,
-                          animations:
-                            animationType === 'none'
-                              ? {}
-                              : {
+                          : layer,
+                      )
+                    }
+                  />
+                ))}
+              </View>
+              <Text style={styles.sheetLabel}>Animation</Text>
+              <View style={styles.chipRow}>
+                {TEXT_ANIMATIONS.map((animationType) => {
+                  const active =
+                    (selectedLayer.animations.loop ?? selectedLayer.animations.entrance)?.type ===
+                    animationType;
+                  return (
+                    <ChoiceChip
+                      active={active}
+                      key={animationType}
+                      label={animationType}
+                      onPress={() =>
+                        updateLayer(selectedLayer.id, (layer) => {
+                          if (layer.type !== 'text') {
+                            return layer;
+                          }
+                          return {
+                            ...layer,
+                            animations:
+                              animationType === 'none'
+                                ? {}
+                                : {
                                   loop: {
                                     id: createId('animation'),
                                     type: animationType,
@@ -943,399 +1106,405 @@ export function EditorScreen({
                                     direction: 'alternate',
                                   },
                                 },
-                        };
-                      })
+                          };
+                        })
+                      }
+                    />
+                  );
+                })}
+              </View>
+              <Pressable
+                onPress={() => {
+                  updateLayer(selectedLayer.id, (layer) =>
+                    layer.type === 'text' ? { ...layer, text: textDraft } : layer,
+                  );
+                  setSheet(null);
+                }}
+                style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}
+              >
+                <Text style={styles.primaryButtonText}>Apply text</Text>
+              </Pressable>
+            </>
+          ) : null}
+          {sheet === 'media' && selectedLayer?.type === 'media' ? (
+            <>
+              <Pressable
+                onPress={() => {
+                  void pickMedia(selectedLayer.mediaKind, selectedLayer.id);
+                }}
+                style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
+              >
+                <Ionicons color={colors.text} name="images-outline" size={19} />
+                <Text style={styles.secondaryButtonText}>Replace media</Text>
+              </Pressable>
+              <Text style={styles.sheetLabel}>Fill mode</Text>
+              <View style={styles.chipRow}>
+                {(['cover', 'contain', 'fill'] as const).map((fit) => (
+                  <ChoiceChip
+                    active={selectedLayer.fit === fit}
+                    key={fit}
+                    label={fit}
+                    onPress={() =>
+                      updateLayer(selectedLayer.id, (layer) =>
+                        layer.type === 'media' ? { ...layer, fit } : layer,
+                      )
                     }
                   />
-                );
-              })}
-            </View>
-            <Pressable
-              onPress={() => {
-                updateLayer(selectedLayer.id, (layer) =>
-                  layer.type === 'text' ? { ...layer, text: textDraft } : layer,
-                );
-                setSheet(null);
-              }}
-              style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}
-            >
-              <Text style={styles.primaryButtonText}>Apply text</Text>
-            </Pressable>
-          </>
-        ) : null}
-      </BottomSheet>
-
-      <BottomSheet onClose={() => setSheet(null)} title="Media" visible={sheet === 'media'}>
-        {selectedLayer?.type === 'media' ? (
-          <>
-            <Pressable
-              onPress={() => {
-                void pickMedia(selectedLayer.mediaKind, selectedLayer.id);
-              }}
-              style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
-            >
-              <Ionicons color={colors.text} name="images-outline" size={19} />
-              <Text style={styles.secondaryButtonText}>Replace media</Text>
-            </Pressable>
-            <Text style={styles.sheetLabel}>Fill mode</Text>
-            <View style={styles.chipRow}>
-              {(['cover', 'contain', 'fill'] as const).map((fit) => (
-                <ChoiceChip
-                  active={selectedLayer.fit === fit}
-                  key={fit}
-                  label={fit}
-                  onPress={() =>
-                    updateLayer(selectedLayer.id, (layer) =>
-                      layer.type === 'media' ? { ...layer, fit } : layer,
-                    )
-                  }
-                />
-              ))}
-            </View>
-            <Text style={styles.sheetLabel}>Frame ratio</Text>
-            <ScrollView
-              contentContainerStyle={styles.chipRow}
-              horizontal
-              showsHorizontalScrollIndicator={false}
-            >
-              {(['free', 'original', '1:1', '4:5', '3:4', '16:9'] as const).map((aspect) => (
-                <ChoiceChip
-                  active={selectedLayer.crop.aspectRatio === aspect}
-                  key={aspect}
-                  label={aspect}
-                  onPress={() => setMediaAspect(aspect)}
-                />
-              ))}
-            </ScrollView>
-            <Text style={styles.sheetLabel}>Size and crop</Text>
-            <PropertyStepper
-              label="Width"
-              onDecrease={() =>
-                updateLayer(selectedLayer.id, (layer) => ({
-                  ...layer,
-                  transform: {
-                    ...layer.transform,
-                    width: clamp(layer.transform.width - 0.04, 0.08, 1.2),
-                  },
-                }))
-              }
-              onIncrease={() =>
-                updateLayer(selectedLayer.id, (layer) => ({
-                  ...layer,
-                  transform: {
-                    ...layer.transform,
-                    width: clamp(layer.transform.width + 0.04, 0.08, 1.2),
-                  },
-                }))
-              }
-              value={`${Math.round(selectedLayer.transform.width * 100)}%`}
-            />
-            <PropertyStepper
-              label="Height"
-              onDecrease={() =>
-                updateLayer(selectedLayer.id, (layer) => ({
-                  ...layer,
-                  transform: {
-                    ...layer.transform,
-                    height: clamp(layer.transform.height - 0.04, 0.06, 1.2),
-                  },
-                }))
-              }
-              onIncrease={() =>
-                updateLayer(selectedLayer.id, (layer) => ({
-                  ...layer,
-                  transform: {
-                    ...layer.transform,
-                    height: clamp(layer.transform.height + 0.04, 0.06, 1.2),
-                  },
-                }))
-              }
-              value={`${Math.round(selectedLayer.transform.height * 100)}%`}
-            />
-            <PropertyStepper
-              label="Zoom"
-              onDecrease={() =>
-                updateLayer(selectedLayer.id, (layer) =>
-                  layer.type === 'media'
-                    ? {
+                ))}
+              </View>
+              <Text style={styles.sheetLabel}>Frame ratio</Text>
+              <ScrollView
+                contentContainerStyle={styles.chipRow}
+                horizontal
+                showsHorizontalScrollIndicator={false}
+              >
+                {(['free', 'original', '1:1', '4:5', '3:4', '16:9'] as const).map((aspect) => (
+                  <ChoiceChip
+                    active={selectedLayer.crop.aspectRatio === aspect}
+                    key={aspect}
+                    label={aspect}
+                    onPress={() => setMediaAspect(aspect)}
+                  />
+                ))}
+              </ScrollView>
+              <Text style={styles.sheetLabel}>Crop controls</Text>
+              <PropertyStepper
+                label="Zoom"
+                onDecrease={() =>
+                  updateLayer(selectedLayer.id, (layer) =>
+                    layer.type === 'media'
+                      ? {
                         ...layer,
                         crop: {
                           ...layer.crop,
                           zoom: clamp(layer.crop.zoom - 0.1, 1, 4),
                         },
                       }
-                    : layer,
-                )
-              }
-              onIncrease={() =>
-                updateLayer(selectedLayer.id, (layer) =>
-                  layer.type === 'media'
-                    ? {
+                      : layer,
+                  )
+                }
+                onIncrease={() =>
+                  updateLayer(selectedLayer.id, (layer) =>
+                    layer.type === 'media'
+                      ? {
                         ...layer,
                         crop: {
                           ...layer.crop,
                           zoom: clamp(layer.crop.zoom + 0.1, 1, 4),
                         },
                       }
-                    : layer,
-                )
-              }
-              value={`${selectedLayer.crop.zoom.toFixed(1)}×`}
-            />
-            <PropertyStepper
-              label="Horizontal crop"
-              onDecrease={() =>
-                updateLayer(selectedLayer.id, (layer) =>
-                  layer.type === 'media'
-                    ? {
+                      : layer,
+                  )
+                }
+                value={`${selectedLayer.crop.zoom.toFixed(1)}×`}
+              />
+              <PropertyStepper
+                label="Horizontal crop"
+                onDecrease={() =>
+                  updateLayer(selectedLayer.id, (layer) =>
+                    layer.type === 'media'
+                      ? {
                         ...layer,
                         crop: {
                           ...layer.crop,
                           x: clamp(layer.crop.x - 0.1, 0, 1),
                         },
                       }
-                    : layer,
-                )
-              }
-              onIncrease={() =>
-                updateLayer(selectedLayer.id, (layer) =>
-                  layer.type === 'media'
-                    ? {
+                      : layer,
+                  )
+                }
+                onIncrease={() =>
+                  updateLayer(selectedLayer.id, (layer) =>
+                    layer.type === 'media'
+                      ? {
                         ...layer,
                         crop: {
                           ...layer.crop,
                           x: clamp(layer.crop.x + 0.1, 0, 1),
                         },
                       }
-                    : layer,
-                )
-              }
-              value={`${Math.round(selectedLayer.crop.x * 100)}%`}
-            />
-            <PropertyStepper
-              label="Vertical crop"
-              onDecrease={() =>
-                updateLayer(selectedLayer.id, (layer) =>
-                  layer.type === 'media'
-                    ? {
+                      : layer,
+                  )
+                }
+                value={`${Math.round(selectedLayer.crop.x * 100)}%`}
+              />
+              <PropertyStepper
+                label="Vertical crop"
+                onDecrease={() =>
+                  updateLayer(selectedLayer.id, (layer) =>
+                    layer.type === 'media'
+                      ? {
                         ...layer,
                         crop: {
                           ...layer.crop,
                           y: clamp(layer.crop.y - 0.1, 0, 1),
                         },
                       }
-                    : layer,
-                )
-              }
-              onIncrease={() =>
-                updateLayer(selectedLayer.id, (layer) =>
-                  layer.type === 'media'
-                    ? {
+                      : layer,
+                  )
+                }
+                onIncrease={() =>
+                  updateLayer(selectedLayer.id, (layer) =>
+                    layer.type === 'media'
+                      ? {
                         ...layer,
                         crop: {
                           ...layer.crop,
                           y: clamp(layer.crop.y + 0.1, 0, 1),
                         },
                       }
-                    : layer,
-                )
-              }
-              value={`${Math.round(selectedLayer.crop.y * 100)}%`}
-            />
-            <View style={styles.inlineActions}>
-              <Pressable
-                onPress={() =>
-                  updateLayer(selectedLayer.id, (layer) =>
-                    layer.type === 'media'
-                      ? {
+                      : layer,
+                  )
+                }
+                value={`${Math.round(selectedLayer.crop.y * 100)}%`}
+              />
+              <View style={styles.inlineActions}>
+                <Pressable
+                  onPress={() =>
+                    updateLayer(selectedLayer.id, (layer) =>
+                      layer.type === 'media'
+                        ? {
                           ...layer,
                           crop: { ...layer.crop, flipX: !layer.crop.flipX },
                         }
-                      : layer,
-                  )
-                }
-                style={styles.inlineAction}
-              >
-                <Ionicons color={colors.text} name="swap-horizontal" size={20} />
-                <Text style={styles.inlineActionText}>Flip X</Text>
-              </Pressable>
-              <Pressable
-                onPress={() =>
-                  updateLayer(selectedLayer.id, (layer) =>
-                    layer.type === 'media'
-                      ? {
+                        : layer,
+                    )
+                  }
+                  style={styles.inlineAction}
+                >
+                  <Ionicons color={colors.text} name="swap-horizontal" size={20} />
+                  <Text style={styles.inlineActionText}>Flip X</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() =>
+                    updateLayer(selectedLayer.id, (layer) =>
+                      layer.type === 'media'
+                        ? {
                           ...layer,
                           crop: { ...layer.crop, flipY: !layer.crop.flipY },
                         }
-                      : layer,
-                  )
-                }
-                style={styles.inlineAction}
-              >
-                <Ionicons color={colors.text} name="swap-vertical" size={20} />
-                <Text style={styles.inlineActionText}>Flip Y</Text>
-              </Pressable>
-              <Pressable
-                onPress={() =>
+                        : layer,
+                    )
+                  }
+                  style={styles.inlineAction}
+                >
+                  <Ionicons color={colors.text} name="swap-vertical" size={20} />
+                  <Text style={styles.inlineActionText}>Flip Y</Text>
+                </Pressable>
+              </View>
+            </>
+          ) : null}
+          {sheet === 'transform' && selectedLayer ? (
+            <>
+              <Text style={styles.sheetHint}>
+                Drag the bottom-right handle on the selected layer to resize it freely. Use the
+                handle above the layer to rotate it.
+              </Text>
+              <Text style={styles.sheetLabel}>Rotation</Text>
+              <PropertyStepper
+                label="Rotation"
+                onDecrease={() =>
                   updateLayer(selectedLayer.id, (layer) => ({
                     ...layer,
                     transform: {
                       ...layer.transform,
-                      rotation: (layer.transform.rotation + 90) % 360,
+                      rotation: layer.transform.rotation - 15,
                     },
                   }))
                 }
-                style={styles.inlineAction}
+                onIncrease={() =>
+                  updateLayer(selectedLayer.id, (layer) => ({
+                    ...layer,
+                    transform: {
+                      ...layer.transform,
+                      rotation: layer.transform.rotation + 15,
+                    },
+                  }))
+                }
+                value={`${Math.round(selectedLayer.transform.rotation)}°`}
+              />
+              <Text style={styles.sheetLabel}>Scale</Text>
+              <PropertyStepper
+                label="Scale X"
+                onDecrease={() =>
+                  updateLayer(selectedLayer.id, (layer) => ({
+                    ...layer,
+                    transform: {
+                      ...layer.transform,
+                      scaleX: clamp(layer.transform.scaleX - 0.1, -1000, 1000),
+                    },
+                  }))
+                }
+                onIncrease={() =>
+                  updateLayer(selectedLayer.id, (layer) => ({
+                    ...layer,
+                    transform: {
+                      ...layer.transform,
+                      scaleX: clamp(layer.transform.scaleX + 0.1, -1000, 1000),
+                    },
+                  }))
+                }
+                value={selectedLayer.transform.scaleX.toFixed(1)}
+              />
+              <PropertyStepper
+                label="Scale Y"
+                onDecrease={() =>
+                  updateLayer(selectedLayer.id, (layer) => ({
+                    ...layer,
+                    transform: {
+                      ...layer.transform,
+                      scaleY: clamp(layer.transform.scaleY - 0.1, -1000, 1000),
+                    },
+                  }))
+                }
+                onIncrease={() =>
+                  updateLayer(selectedLayer.id, (layer) => ({
+                    ...layer,
+                    transform: {
+                      ...layer.transform,
+                      scaleY: clamp(layer.transform.scaleY + 0.1, -1000, 1000),
+                    },
+                  }))
+                }
+                value={selectedLayer.transform.scaleY.toFixed(1)}
+              />
+            </>
+          ) : null}
+          {sheet === 'shape' && selectedLayer?.type === 'shape' ? (
+            <>
+              <Text style={styles.sheetLabel}>Shape</Text>
+              <View style={styles.chipRow}>
+                {(['rectangle', 'rounded', 'circle', 'line'] as const).map((shape) => (
+                  <ChoiceChip
+                    active={selectedLayer.shape === shape}
+                    key={shape}
+                    label={shape}
+                    onPress={() =>
+                      updateLayer(selectedLayer.id, (layer) =>
+                        layer.type === 'shape' ? { ...layer, shape } : layer,
+                      )
+                    }
+                  />
+                ))}
+              </View>
+              <Text style={styles.sheetLabel}>Fill</Text>
+              <View style={styles.swatches}>
+                {SHAPE_COLORS.map((color) => (
+                  <Pressable
+                    key={color}
+                    onPress={() =>
+                      updateLayer(selectedLayer.id, (layer) =>
+                        layer.type === 'shape' ? { ...layer, fill: color } : layer,
+                      )
+                    }
+                    style={[
+                      styles.swatch,
+                      { backgroundColor: color },
+                      selectedLayer.fill === color && styles.swatchSelected,
+                    ]}
+                  />
+                ))}
+              </View>
+            </>
+          ) : null}
+          {sheet === 'arrange' && selectedLayer ? (
+            <>
+              <View style={styles.actionGrid}>
+                <ActionTile
+                  icon="play-forward-outline"
+                  label="To front"
+                  onPress={() => moveLayer(selectedLayer.id, 'front')}
+                />
+                <ActionTile
+                  icon="play-back-outline"
+                  label="To back"
+                  onPress={() => moveLayer(selectedLayer.id, 'back')}
+                />
+                <ActionTile
+                  icon="arrow-up-outline"
+                  label="Forward"
+                  onPress={() => moveLayer(selectedLayer.id, 'forward')}
+                />
+                <ActionTile
+                  icon="arrow-down-outline"
+                  label="Backward"
+                  onPress={() => moveLayer(selectedLayer.id, 'backward')}
+                />
+              </View>
+              <Text style={styles.sheetLabel}>Opacity</Text>
+              <PropertyStepper
+                label="Layer opacity"
+                onDecrease={() =>
+                  updateLayer(selectedLayer.id, (layer) => ({
+                    ...layer,
+                    opacity: clamp(layer.opacity - 0.1, 0.1, 1),
+                  }))
+                }
+                onIncrease={() =>
+                  updateLayer(selectedLayer.id, (layer) => ({
+                    ...layer,
+                    opacity: clamp(layer.opacity + 0.1, 0.1, 1),
+                  }))
+                }
+                value={`${Math.round(selectedLayer.opacity * 100)}%`}
+              />
+            </>
+          ) : null}
+          {sheet === 'json' ? (
+            <>
+              <Text style={styles.sheetLabel}>Project name</Text>
+              <TextInput
+                onChangeText={setNameDraft}
+                placeholder="Project name"
+                placeholderTextColor={colors.textMuted}
+                style={styles.nameInput}
+                value={nameDraft}
+              />
+              <Pressable
+                onPress={() =>
+                  commit((current) => ({
+                    ...current,
+                    name: nameDraft.trim() || 'Untitled collage',
+                  }))
+                }
+                style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
               >
-                <Ionicons color={colors.text} name="refresh" size={20} />
-                <Text style={styles.inlineActionText}>Rotate</Text>
+                <Ionicons color={colors.text} name="checkmark" size={19} />
+                <Text style={styles.secondaryButtonText}>Save name</Text>
               </Pressable>
-            </View>
-          </>
-        ) : null}
-      </BottomSheet>
-
-      <BottomSheet onClose={() => setSheet(null)} title="Shape" visible={sheet === 'shape'}>
-        {selectedLayer?.type === 'shape' ? (
-          <>
-            <Text style={styles.sheetLabel}>Shape</Text>
-            <View style={styles.chipRow}>
-              {(['rectangle', 'rounded', 'circle', 'line'] as const).map((shape) => (
-                <ChoiceChip
-                  active={selectedLayer.shape === shape}
-                  key={shape}
-                  label={shape}
-                  onPress={() =>
-                    updateLayer(selectedLayer.id, (layer) =>
-                      layer.type === 'shape' ? { ...layer, shape } : layer,
-                    )
-                  }
-                />
-              ))}
-            </View>
-            <Text style={styles.sheetLabel}>Fill</Text>
-            <View style={styles.swatches}>
-              {SHAPE_COLORS.map((color) => (
-                <Pressable
-                  key={color}
-                  onPress={() =>
-                    updateLayer(selectedLayer.id, (layer) =>
-                      layer.type === 'shape' ? { ...layer, fill: color } : layer,
-                    )
-                  }
-                  style={[
-                    styles.swatch,
-                    { backgroundColor: color },
-                    selectedLayer.fill === color && styles.swatchSelected,
-                  ]}
-                />
-              ))}
-            </View>
-          </>
-        ) : null}
-      </BottomSheet>
-
-      <BottomSheet
-        onClose={() => setSheet(null)}
-        title="Arrange"
-        visible={sheet === 'arrange'}
-      >
-        {selectedLayer ? (
-          <>
-            <View style={styles.actionGrid}>
-              <ActionTile
-                icon="play-forward-outline"
-                label="To front"
-                onPress={() => moveLayer(selectedLayer.id, 'front')}
-              />
-              <ActionTile
-                icon="play-back-outline"
-                label="To back"
-                onPress={() => moveLayer(selectedLayer.id, 'back')}
-              />
-              <ActionTile
-                icon="arrow-up-outline"
-                label="Forward"
-                onPress={() => moveLayer(selectedLayer.id, 'forward')}
-              />
-              <ActionTile
-                icon="arrow-down-outline"
-                label="Backward"
-                onPress={() => moveLayer(selectedLayer.id, 'backward')}
-              />
-            </View>
-            <Text style={styles.sheetLabel}>Opacity</Text>
-            <PropertyStepper
-              label="Layer opacity"
-              onDecrease={() =>
-                updateLayer(selectedLayer.id, (layer) => ({
-                  ...layer,
-                  opacity: clamp(layer.opacity - 0.1, 0.1, 1),
-                }))
-              }
-              onIncrease={() =>
-                updateLayer(selectedLayer.id, (layer) => ({
-                  ...layer,
-                  opacity: clamp(layer.opacity + 0.1, 0.1, 1),
-                }))
-              }
-              value={`${Math.round(selectedLayer.opacity * 100)}%`}
-            />
-          </>
-        ) : null}
-      </BottomSheet>
-
-      <BottomSheet onClose={() => setSheet(null)} title="Project JSON" visible={sheet === 'json'}>
-        <Text style={styles.sheetLabel}>Project name</Text>
-        <TextInput
-          onChangeText={setNameDraft}
-          placeholder="Project name"
-          placeholderTextColor={colors.textMuted}
-          style={styles.nameInput}
-          value={nameDraft}
-        />
-        <Pressable
-          onPress={() =>
-            commit((current) => ({
-              ...current,
-              name: nameDraft.trim() || 'Untitled collage',
-            }))
-          }
-          style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
-        >
-          <Ionicons color={colors.text} name="checkmark" size={19} />
-          <Text style={styles.secondaryButtonText}>Save name</Text>
-        </Pressable>
-        <View style={styles.exportCard}>
-          <View style={styles.exportIcon}>
-            <Ionicons color={colors.accentInk} name="document-text-outline" size={24} />
-          </View>
-          <View style={styles.exportCopy}>
-            <Text style={styles.exportTitle}>Project JSON</Text>
-            <Text style={styles.exportMeta}>
-              Preserves the design and same-device media references, transforms, timing, and
-              editor state.
-            </Text>
-          </View>
-          <IconButton icon="share-outline" onPress={() => void exportProject()} tone="surface" />
-        </View>
-        <View style={styles.exportCard}>
-          <View style={styles.exportIcon}>
-            <Ionicons color={colors.accentInk} name="albums-outline" size={24} />
-          </View>
-          <View style={styles.exportCopy}>
-            <Text style={styles.exportTitle}>Reusable template</Text>
-            <Text style={styles.exportMeta}>
-              Keeps the design and metadata while clearing device-local media.
-            </Text>
-          </View>
-          <IconButton icon="share-outline" onPress={() => void exportTemplate()} tone="surface" />
-        </View>
-        <Text style={styles.schemaNote}>
-          Schema v1 uses one readable JSON document for both projects and templates. The
-          documentType field is the only top-level distinction.
-        </Text>
-      </BottomSheet>
+              <View style={styles.exportCard}>
+                <View style={styles.exportIcon}>
+                  <Ionicons color={colors.accentInk} name="document-text-outline" size={24} />
+                </View>
+                <View style={styles.exportCopy}>
+                  <Text style={styles.exportTitle}>Project JSON</Text>
+                  <Text style={styles.exportMeta}>
+                    Preserves the design and same-device media references, transforms, timing, and
+                    editor state.
+                  </Text>
+                </View>
+                <IconButton icon="share-outline" onPress={() => void exportProject()} tone="surface" />
+              </View>
+              <View style={styles.exportCard}>
+                <View style={styles.exportIcon}>
+                  <Ionicons color={colors.accentInk} name="albums-outline" size={24} />
+                </View>
+                <View style={styles.exportCopy}>
+                  <Text style={styles.exportTitle}>Reusable template</Text>
+                  <Text style={styles.exportMeta}>
+                    Keeps the design and metadata while clearing device-local media.
+                  </Text>
+                </View>
+                <IconButton icon="share-outline" onPress={() => void exportTemplate()} tone="surface" />
+              </View>
+              <Text style={styles.schemaNote}>
+                Schema v1 uses one readable JSON document for both projects and templates. The
+                documentType field is the only top-level distinction.
+              </Text>
+            </>
+          ) : null}
+        </BottomSheet>
+      ) : null}
     </SafeAreaView>
   );
 }

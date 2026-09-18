@@ -177,6 +177,27 @@ function stringArrayValue(
   });
 }
 
+function numberArrayValue(
+  record: Record<string, unknown>,
+  key: string,
+  fallback: number[],
+  label: string,
+): number[] {
+  const value = record[key];
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+  if (!Array.isArray(value) || value.length > 100) {
+    throw new Error(`${label} must be an array with no more than 100 entries.`);
+  }
+  return value.map((item, index) => {
+    if (typeof item !== 'number' || !Number.isInteger(item)) {
+      throw new Error(`${label}[${index}] must be an integer.`);
+    }
+    return item;
+  });
+}
+
 function jsonValue(value: unknown, label: string, depth = 0): JsonValue {
   if (depth > 8) {
     throw new Error(`${label} is nested too deeply.`);
@@ -243,10 +264,10 @@ function transformValue(
     throw new Error(`${label} must be an object.`);
   }
   return {
-    x: numberValue(value, 'x', fallback.x, -2, 2, `${label}.x`),
-    y: numberValue(value, 'y', fallback.y, -2, 2, `${label}.y`),
-    width: numberValue(value, 'width', fallback.width, 0.01, 4, `${label}.width`),
-    height: numberValue(value, 'height', fallback.height, 0.01, 4, `${label}.height`),
+    x: numberValue(value, 'x', fallback.x, -1000, 1000, `${label}.x`),
+    y: numberValue(value, 'y', fallback.y, -1000, 1000, `${label}.y`),
+    width: numberValue(value, 'width', fallback.width, 0.01, 1000, `${label}.width`),
+    height: numberValue(value, 'height', fallback.height, 0.01, 1000, `${label}.height`),
     rotation: numberValue(
       value,
       'rotation',
@@ -255,8 +276,8 @@ function transformValue(
       3600,
       `${label}.rotation`,
     ),
-    scaleX: numberValue(value, 'scaleX', fallback.scaleX, -10, 10, `${label}.scaleX`),
-    scaleY: numberValue(value, 'scaleY', fallback.scaleY, -10, 10, `${label}.scaleY`),
+    scaleX: numberValue(value, 'scaleX', fallback.scaleX, -1000, 1000, `${label}.scaleX`),
+    scaleY: numberValue(value, 'scaleY', fallback.scaleY, -1000, 1000, `${label}.scaleY`),
     anchorX: numberValue(value, 'anchorX', fallback.anchorX, 0, 1, `${label}.anchorX`),
     anchorY: numberValue(value, 'anchorY', fallback.anchorY, 0, 1, `${label}.anchorY`),
   };
@@ -765,7 +786,6 @@ export function parseCollageDocument(
     '4:5',
     'canvas.aspectRatio',
   );
-  const ratio = ASPECT_RATIOS[aspectRatio];
   const dimensions = getExportDimensions(aspectRatio);
   const durationMs = numberValue(
     canvas,
@@ -781,6 +801,11 @@ export function parseCollageDocument(
   const metadata = recordValue(candidate, 'metadata', 'metadata') ?? {};
   const layers = layersValue(candidate.layers, durationMs);
   const now = new Date().toISOString();
+  const pageCount = numberValue(canvas, 'pageCount', 1, 1, 20, 'canvas.pageCount');
+  const pageOrder = numberArrayValue(canvas, 'pageOrder', [], 'canvas.pageOrder').filter(
+    (value, index, values) =>
+      value >= 0 && value < pageCount && values.indexOf(value) === index,
+  );
 
   const normalized: CollageDocument = {
     schemaVersion: 1,
@@ -795,6 +820,8 @@ export function parseCollageDocument(
       aspectRatio,
       width: dimensions.width,
       height: dimensions.height,
+      pageCount,
+      pageOrder,
       durationMs,
       fps: numberValue(canvas, 'fps', 30, 1, 240, 'canvas.fps'),
       background: {
@@ -825,7 +852,12 @@ export function parseCollageDocument(
     layers,
     requirements: calculateRequirements(layers),
     editor: {
-      snapToGrid: booleanValue(editor, 'snapToGrid', true, 'editor.snapToGrid'),
+      snapMediaSize: booleanValue(
+        editor,
+        'snapMediaSize',
+        booleanValue(editor, 'snapToGrid', true, 'editor.snapToGrid'),
+        'editor.snapMediaSize',
+      ),
       gridSize: numberValue(editor, 'gridSize', 12, 1, 1000, 'editor.gridSize'),
       showGrid: booleanValue(editor, 'showGrid', false, 'editor.showGrid'),
       showSafeArea: booleanValue(
@@ -871,8 +903,8 @@ export function parseCollageDocument(
   };
 
   return documentType === 'collage-template'
-    ? ({ ...normalized, documentType } as CollageTemplate)
-    : ({ ...normalized, documentType } as CollageProject);
+    ? { ...normalized, documentType }
+    : { ...normalized, documentType };
 }
 
 export async function importCollageJson(): Promise<

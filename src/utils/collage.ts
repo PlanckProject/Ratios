@@ -5,6 +5,7 @@ import type {
   CollageLayer,
   CollageProject,
   CollageTemplate,
+  LayerTransform,
   MediaKind,
   MediaLayer,
   ShapeLayer,
@@ -166,6 +167,16 @@ export function calculateRequirements(layers: CollageLayer[]): CollageDocument['
   };
 }
 
+export function totalMediaRequirements(
+  requirements: CollageDocument['requirements'],
+): number {
+  return (
+    requirements.imageCount +
+    requirements.videoCount +
+    requirements.flexibleMediaCount
+  );
+}
+
 export function createBlankProject(
   name = 'Untitled collage',
   aspectRatio: AspectRatioId = '4:5',
@@ -185,6 +196,8 @@ export function createBlankProject(
       aspectRatio,
       width: dimensions.width,
       height: dimensions.height,
+      pageCount: 1,
+      pageOrder: [0],
       durationMs: 8000,
       fps: 30,
       background: {
@@ -208,7 +221,7 @@ export function createBlankProject(
       layerCount: 0,
     },
     editor: {
-      snapToGrid: true,
+      snapMediaSize: true,
       gridSize: 12,
       showGrid: false,
       showSafeArea: false,
@@ -223,6 +236,26 @@ export function createBlankProject(
   };
 }
 
+export function getPageOrder(document: CollageDocument): number[] {
+  const pageCount = Math.max(1, document.canvas.pageCount ?? 1);
+  const configured = document.canvas.pageOrder ?? [];
+  const seen = new Set<number>();
+  const order: number[] = [];
+
+  for (const page of configured) {
+    if (Number.isInteger(page) && page >= 0 && page < pageCount && !seen.has(page)) {
+      seen.add(page);
+      order.push(page);
+    }
+  }
+  for (let page = 0; page < pageCount; page += 1) {
+    if (!seen.has(page)) {
+      order.push(page);
+    }
+  }
+  return order;
+}
+
 export function updateDocumentLayers<TDocument extends CollageDocument>(
   document: TDocument,
   layers: CollageLayer[],
@@ -233,6 +266,143 @@ export function updateDocumentLayers<TDocument extends CollageDocument>(
     layers: orderedLayers,
     requirements: calculateRequirements(orderedLayers),
     updatedAt: timestamp(),
+  };
+}
+
+const PAGE_SNAP_THRESHOLD = 0.045;
+const LAYER_SNAP_THRESHOLD = 0.04;
+
+function pageGuides(document: CollageDocument, axis: 'x' | 'y'): number[] {
+  if (axis === 'y') {
+    return [0, 0.5, 1];
+  }
+  const pageCount = Math.max(1, document.canvas.pageCount ?? 1);
+  const guides: number[] = [];
+  for (let page = 0; page < pageCount; page += 1) {
+    guides.push(page, page + 0.5);
+  }
+  guides.push(Math.ceil(pageCount));
+  return guides;
+}
+
+function layerGuides(
+  layers: CollageLayer[],
+  axis: 'x' | 'y',
+): number[] {
+  const guides: number[] = [];
+  for (const layer of layers) {
+    const start = axis === 'x' ? layer.transform.x : layer.transform.y;
+    const size = axis === 'x' ? layer.transform.width : layer.transform.height;
+    guides.push(start, start + size / 2, start + size);
+  }
+  return guides;
+}
+
+function nearestSnapDelta(
+  points: number[],
+  candidates: number[],
+  threshold: number,
+): number | null {
+  let bestDelta = 0;
+  let bestDistance = threshold;
+  let found = false;
+  for (const point of points) {
+    for (const candidate of candidates) {
+      const delta = candidate - point;
+      const distance = Math.abs(delta);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestDelta = delta;
+        found = true;
+      }
+    }
+  }
+  return found ? bestDelta : null;
+}
+
+function snapDelta(
+  points: number[],
+  pageCandidates: number[],
+  layerCandidates: number[],
+): number {
+  return (
+    nearestSnapDelta(points, pageCandidates, PAGE_SNAP_THRESHOLD) ??
+    nearestSnapDelta(points, layerCandidates, LAYER_SNAP_THRESHOLD) ??
+    0
+  );
+}
+
+export function snapLayerTransform(
+  document: CollageDocument,
+  layerId: string,
+  transform: LayerTransform,
+): LayerTransform {
+  if (!document.editor.snapMediaSize) {
+    return transform;
+  }
+
+  const currentTransform = document.layers.find((layer) => layer.id === layerId)?.transform;
+  const otherLayers = document.layers.filter(
+    (layer) => layer.id !== layerId && layer.visible,
+  );
+  const xPage = pageGuides(document, 'x');
+  const yPage = pageGuides(document, 'y');
+  const xLayers = layerGuides(otherLayers, 'x');
+  const yLayers = layerGuides(otherLayers, 'y');
+
+  const left = transform.x;
+  const width = Math.max(transform.width, 0.01);
+  const centerX = left + width / 2;
+  const right = left + width;
+  const top = transform.y;
+  const height = Math.max(transform.height, 0.01);
+  const centerY = top + height / 2;
+  const bottom = top + height;
+
+  const widthChanged = currentTransform
+    ? Math.abs(transform.width - currentTransform.width) > 1e-6
+    : false;
+  const heightChanged = currentTransform
+    ? Math.abs(transform.height - currentTransform.height) > 1e-6
+    : false;
+  const leftChanged = currentTransform
+    ? Math.abs(transform.x - currentTransform.x) > 1e-6
+    : false;
+  const topChanged = currentTransform
+    ? Math.abs(transform.y - currentTransform.y) > 1e-6
+    : false;
+
+  let nextX = transform.x;
+  let nextY = transform.y;
+  let nextWidth = width;
+  let nextHeight = height;
+
+  if (!widthChanged) {
+    nextX += snapDelta([left, centerX, right], xPage, xLayers);
+  } else if (leftChanged) {
+    const delta = snapDelta([left], xPage, xLayers);
+    nextX += delta;
+    nextWidth -= delta;
+  } else {
+    nextWidth += snapDelta([right], xPage, xLayers);
+  }
+
+  if (!heightChanged) {
+    nextY += snapDelta([top, centerY, bottom], yPage, yLayers);
+  } else if (topChanged) {
+    const delta = snapDelta([top], yPage, yLayers);
+    nextY += delta;
+    nextHeight -= delta;
+  } else {
+    nextHeight += snapDelta([bottom], yPage, yLayers);
+  }
+
+  return {
+    ...transform,
+    x: nextX,
+    y: nextY,
+    width: Math.max(0.01, nextWidth),
+    height: Math.max(0.01, nextHeight),
   };
 }
 

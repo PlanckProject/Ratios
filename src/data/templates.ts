@@ -1,6 +1,14 @@
-import type { CollageTemplate, MediaLayer, TextLayer } from '../types/collage';
-import { getExportDimensions } from '../constants/ratios';
-import { calculateRequirements, createMediaLayer, createTextLayer } from '../utils/collage';
+import type {
+  AspectRatioId,
+  CollageTemplate,
+  LayerTransform,
+  MediaLayer,
+} from '../types/collage';
+import {
+  calculateRequirements,
+  createBlankProject,
+  createMediaLayer,
+} from '../utils/collage';
 
 const imageUris = [
   'https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=1200&q=80',
@@ -9,185 +17,124 @@ const imageUris = [
   'https://images.unsplash.com/photo-1507525428034-b723cf961d3e?auto=format&fit=crop&w=1200&q=80',
   'https://images.unsplash.com/photo-1494783367193-149034c05e8f?auto=format&fit=crop&w=1200&q=80',
   'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&w=1200&q=80',
+  'https://images.unsplash.com/photo-1511497584788-876760111969?auto=format&fit=crop&w=1200&q=80',
+  'https://images.unsplash.com/photo-1500534623283-312aade485b7?auto=format&fit=crop&w=1200&q=80',
+  'https://images.unsplash.com/photo-1519681393784-d120267933ba?auto=format&fit=crop&w=1200&q=80',
+  'https://images.unsplash.com/photo-1497366811353-6870744d04b2?auto=format&fit=crop&w=1200&q=80',
+  'https://images.unsplash.com/photo-1518837695005-2083093ee35b?auto=format&fit=crop&w=1200&q=80',
 ];
 
-function imageLayer(
-  name: string,
-  uri: string,
-  transform: Partial<MediaLayer['transform']>,
-  borderRadius = 0,
-): MediaLayer {
-  return {
-    ...createMediaLayer('any', transform),
-    name,
-    source: {
-      uri,
-      role: 'placeholder',
-    },
-    frame: {
-      shape: borderRadius > 0 ? 'rounded' : 'rectangle',
-      borderRadius,
-      borderWidth: 0,
-      borderColor: '#FFFFFF',
-    },
-  };
+type Pane = Pick<LayerTransform, 'x' | 'y' | 'width' | 'height'>;
+
+function grid(columns: number, rows: number): Pane[] {
+  return Array.from({ length: columns * rows }, (_, index) => ({
+    x: (index % columns) / columns,
+    y: Math.floor(index / columns) / rows,
+    width: 1 / columns,
+    height: 1 / rows,
+  }));
 }
 
-function titleLayer(
-  text: string,
-  transform: Partial<TextLayer['transform']>,
-  color = '#FFFFFF',
-): TextLayer {
-  const layer = createTextLayer(text);
-  return {
-    ...layer,
-    transform: {
-      ...layer.transform,
-      ...transform,
-    },
-    style: {
-      ...layer.style,
-      color,
-      fontSize: 34,
-      lineHeight: 38,
-      fontWeight: '600',
-      letterSpacing: -0.5,
-      shadow: {
-        color: '#000000',
-        opacity: 0.28,
-        radius: 5,
-        offsetX: 0,
-        offsetY: 2,
-      },
-    },
-    animations: {
-      entrance: {
-        id: 'title-rise',
-        type: 'rise',
-        enabled: true,
-        durationMs: 500,
-        delayMs: 120,
-        easing: 'ease-out',
-        loop: false,
-        direction: 'normal',
-      },
-    },
-  };
-}
+const layouts = {
+  full: [{ x: 0, y: 0, width: 1, height: 1 }],
+  columns: grid(2, 1),
+  rows: grid(1, 2),
+  triptych: grid(3, 1),
+  stack: grid(1, 3),
+  grid: grid(2, 2),
+  gallery: grid(3, 3),
+  feature: [
+    { x: 0, y: 0, width: 2 / 3, height: 1 },
+    { x: 2 / 3, y: 0, width: 1 / 3, height: 0.5 },
+    { x: 2 / 3, y: 0.5, width: 1 / 3, height: 0.5 },
+  ],
+  editorial: [
+    { x: 0, y: 0, width: 1, height: 2 / 3 },
+    { x: 0, y: 2 / 3, width: 0.5, height: 1 / 3 },
+    { x: 0.5, y: 2 / 3, width: 0.5, height: 1 / 3 },
+  ],
+  mosaic: [
+    { x: 0, y: 0, width: 0.5, height: 2 / 3 },
+    { x: 0, y: 2 / 3, width: 0.5, height: 1 / 3 },
+    { x: 0.5, y: 0, width: 0.5, height: 1 / 3 },
+    { x: 0.5, y: 1 / 3, width: 0.5, height: 2 / 3 },
+  ],
+} satisfies Record<string, Pane[]>;
 
-function template(
+type TemplateSpec = [
   id: string,
   name: string,
   category: string,
-  aspectRatio: CollageTemplate['canvas']['aspectRatio'],
-  background: string,
-  layers: CollageTemplate['layers'],
+  aspectRatio: AspectRatioId,
+  pages: Array<keyof typeof layouts>,
   tags: string[],
-): CollageTemplate {
-  const now = '2026-01-01T00:00:00.000Z';
-  const dimensions = getExportDimensions(aspectRatio);
-  const orderedLayers = layers.map((layer, index) => ({ ...layer, zIndex: index }));
-
-  return {
-    schemaVersion: 1,
-    documentType: 'collage-template',
-    id,
-    name,
-    description: `${category} collage template`,
-    createdAt: now,
-    updatedAt: now,
-    appVersion: '1.0.0',
-    canvas: {
-      aspectRatio,
-      width: dimensions.width,
-      height: dimensions.height,
-      durationMs: 8000,
-      fps: 30,
-      background: {
-        type: 'color',
-        color: background,
-        blur: 0,
-      },
-      safeArea: {
-        top: 0.04,
-        right: 0.04,
-        bottom: 0.04,
-        left: 0.04,
-      },
-    },
-    layers: orderedLayers,
-    requirements: calculateRequirements(orderedLayers),
-    editor: {
-      snapToGrid: true,
-      gridSize: 12,
-      showGrid: false,
-      showSafeArea: false,
-      zoom: 1,
-    },
-    metadata: {
-      author: 'Ratios',
-      category,
-      tags,
-      locale: 'en',
-      coverLayerId: orderedLayers.at(-1)?.id,
-    },
-  };
-}
-
-export const BUILTIN_TEMPLATES: CollageTemplate[] = [
-  template(
-    'template-summer-windows',
-    'Summer windows',
-    'Travel',
-    '4:5',
-    '#D9D5CC',
-    [
-      imageLayer('Backdrop', imageUris[0]!, { x: 0, y: 0, width: 1, height: 1 }),
-      imageLayer('Top memory', imageUris[1]!, { x: 0.12, y: 0.08, width: 0.46, height: 0.28 }, 8),
-      imageLayer('Middle memory', imageUris[2]!, { x: 0.42, y: 0.38, width: 0.45, height: 0.28 }, 8),
-      imageLayer('Bottom memory', imageUris[3]!, { x: 0.15, y: 0.7, width: 0.46, height: 0.24 }, 8),
-      titleLayer('SUMMER\nNOTES', { x: 0.05, y: 0.36, width: 0.32, height: 0.14 }),
-    ],
-    ['summer', 'travel', 'editorial'],
-  ),
-  template(
-    'template-golden-hour',
-    'Golden hour',
-    'Featured',
-    '9:16',
-    '#6E5B4E',
-    [
-      imageLayer('Hero', imageUris[2]!, { x: 0, y: 0, width: 1, height: 1 }),
-      titleLayer('GOLDEN\nHOUR', { x: 0.1, y: 0.68, width: 0.8, height: 0.17 }),
-    ],
-    ['portrait', 'reel', 'minimal'],
-  ),
-  template(
-    'template-coastal-grid',
-    'Coastal grid',
-    'Summer',
-    '1:1',
-    '#F0EEE7',
-    [
-      imageLayer('Left', imageUris[3]!, { x: 0.04, y: 0.04, width: 0.45, height: 0.58 }, 16),
-      imageLayer('Top right', imageUris[4]!, { x: 0.51, y: 0.04, width: 0.45, height: 0.28 }, 16),
-      imageLayer('Bottom right', imageUris[5]!, { x: 0.51, y: 0.34, width: 0.45, height: 0.62 }, 16),
-      titleLayer('COAST\nTO COAST', { x: 0.05, y: 0.66, width: 0.42, height: 0.22 }, '#151515'),
-    ],
-    ['summer', 'grid', 'square'],
-  ),
-  template(
-    'template-film-notes',
-    'Film notes',
-    'Stories',
-    '3:4',
-    '#171717',
-    [
-      imageLayer('Top frame', imageUris[5]!, { x: 0.08, y: 0.08, width: 0.84, height: 0.29 }, 4),
-      imageLayer('Middle frame', imageUris[1]!, { x: 0.08, y: 0.39, width: 0.84, height: 0.29 }, 4),
-      imageLayer('Bottom frame', imageUris[0]!, { x: 0.08, y: 0.7, width: 0.84, height: 0.22 }, 4),
-      titleLayer('FILM / 06', { x: 0.14, y: 0.44, width: 0.72, height: 0.1 }),
-    ],
-    ['film', 'story', 'dark'],
-  ),
 ];
+
+const templateSpecs: TemplateSpec[] = [
+  ['summer-windows', 'Summer windows', 'Travel', '4:5', ['mosaic'], ['summer', 'travel', 'editorial']],
+  ['golden-hour', 'Golden hour', 'Featured', '9:16', ['full'], ['portrait', 'reel', 'minimal']],
+  ['coastal-grid', 'Coastal grid', 'Summer', '1:1', ['feature'], ['summer', 'grid', 'square']],
+  ['film-notes', 'Film notes', 'Stories', '3:4', ['stack'], ['film', 'story', 'dark']],
+  ['weekend-contact', 'Weekend contact', 'Travel', '4:5', ['grid', 'full', 'columns'], ['travel', 'contact-sheet']],
+  ['road-trip', 'Road trip', 'Travel', '3:4', ['full', 'rows', 'columns', 'editorial'], ['road', 'film']],
+  ['city-lights', 'City lights', 'Stories', '9:16', ['full', 'rows', 'editorial', 'full', 'stack'], ['city', 'night']],
+  ['coastlines', 'Coastlines', 'Summer', '1:1', ['columns', 'full', 'rows'], ['coast', 'summer']],
+  ['mountain-air', 'Mountain air', 'Travel', '4:5', ['full', 'editorial', 'columns', 'full', 'rows', 'feature'], ['mountains', 'editorial']],
+  ['quiet-mornings', 'Quiet mornings', 'Lifestyle', '3:4', ['rows', 'full', 'editorial', 'columns'], ['slow', 'lifestyle']],
+  ['studio-notes', 'Studio notes', 'Design', '1:1', ['grid', 'feature', 'full'], ['design', 'grid']],
+  ['after-hours', 'After hours', 'Stories', '9:16', ['full', 'stack', 'full', 'rows', 'editorial'], ['night', 'story']],
+  ['field-journal', 'Field journal', 'Nature', '4:5', ['editorial', 'full', 'mosaic', 'columns'], ['nature', 'journal']],
+  ['festival-frame', 'Festival frame', 'Events', '3:4', ['full', 'feature', 'rows'], ['festival', 'bold']],
+  ['analog-week', 'Analog week', 'Stories', '4:5', ['rows', 'full', 'grid', 'columns', 'editorial', 'full'], ['analog', 'film']],
+  ['blue-hour', 'Blue hour', 'Travel', '9:16', ['full', 'rows', 'stack', 'full'], ['blue', 'travel']],
+  ['market-walk', 'Market walk', 'Lifestyle', '1:1', ['mosaic', 'full', 'grid'], ['food', 'lifestyle']],
+  ['desert-drive', 'Desert drive', 'Travel', '3:2', ['full', 'triptych', 'feature', 'columns', 'full'], ['desert', 'road']],
+  ['sunday-table', 'Sunday table', 'Lifestyle', '4:5', ['editorial', 'full', 'columns'], ['home', 'food']],
+  ['neon-nights', 'Neon nights', 'Stories', '9:16', ['full', 'rows', 'editorial', 'full', 'stack', 'rows'], ['neon', 'night']],
+  ['garden-study', 'Garden study', 'Nature', '3:4', ['feature', 'full', 'rows', 'mosaic'], ['garden', 'nature']],
+  ['northbound', 'Northbound', 'Travel', '3:2', ['full', 'columns', 'triptych', 'full', 'feature'], ['road', 'journal']],
+  ['soft-focus', 'Soft focus', 'Lifestyle', '1:1', ['full', 'columns', 'editorial'], ['soft', 'minimal']],
+  ['summer-postcards', 'Summer postcards', 'Summer', '4:5', ['grid', 'full', 'rows', 'mosaic', 'columns', 'full'], ['summer', 'postcards']],
+  ['night-train', 'Night train', 'Stories', '3:4', ['full', 'rows', 'feature', 'full'], ['train', 'night']],
+  ['phone-gallery', 'Gallery', 'Editorial', '9:16', ['gallery'], ['gallery', 'phone', 'photos', 'contact-sheet']],
+];
+
+export const BUILTIN_TEMPLATES: CollageTemplate[] = templateSpecs.map(
+  ([id, name, category, aspectRatio, pages, tags], templateIndex) => {
+    const project = createBlankProject(name, aspectRatio);
+    const templateId = `template-${id}`;
+    const layers: MediaLayer[] = pages.flatMap((layout, pageIndex) =>
+      layouts[layout].map((pane, paneIndex) => ({
+        ...createMediaLayer('any', { ...pane, x: pageIndex + pane.x }),
+        id: `${templateId}-page-${pageIndex + 1}-pane-${paneIndex + 1}`,
+        name: `Page ${pageIndex + 1} photo ${paneIndex + 1}`,
+        source: {
+          uri: imageUris[(templateIndex * 3 + pageIndex * 3 + paneIndex) % imageUris.length]!,
+          role: 'placeholder',
+        },
+      })),
+    );
+
+    return {
+      ...project,
+      id: templateId,
+      documentType: 'collage-template',
+      description: `${category} photography with edge-to-edge, full-bleed layouts.`,
+      canvas: {
+        ...project.canvas,
+        pageCount: pages.length,
+        pageOrder: pages.map((_, index) => index),
+        background: { type: 'color', color: '#111111', blur: 0 },
+      },
+      layers: layers.map((layer, index) => ({ ...layer, zIndex: index })),
+      requirements: calculateRequirements(layers),
+      metadata: {
+        ...project.metadata,
+        author: 'Ratios',
+        category,
+        tags: [...tags, 'full-bleed'],
+        coverLayerId: layers[0]?.id,
+      },
+    };
+  },
+);

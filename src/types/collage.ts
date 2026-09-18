@@ -153,6 +153,8 @@ export interface CollageDocument {
     aspectRatio: AspectRatioId;
     width: number;
     height: number;
+    pageCount: number;
+    pageOrder?: number[];
     durationMs: number;
     fps: number;
     background: {
@@ -177,7 +179,7 @@ export interface CollageDocument {
     layerCount: number;
   };
   editor: {
-    snapToGrid: boolean;
+    snapMediaSize: boolean;
     gridSize: number;
     showGrid: boolean;
     showSafeArea: boolean;

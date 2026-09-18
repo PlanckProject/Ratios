@@ -5,8 +5,10 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { CollageCanvas } from '../components/CollageCanvas';
 import { IconButton } from '../components/IconButton';
+import { TemplateMetrics } from '../components/TemplateMetrics';
 import { colors, radius } from '../constants/theme';
 import type { CollageTemplate } from '../types/collage';
+import { totalMediaRequirements } from '../utils/collage';
 
 interface TemplateDetailScreenProps {
   template: CollageTemplate;
@@ -56,15 +58,18 @@ export function TemplateDetailScreen({
           <View style={styles.chips}>
             <InfoChip
               icon="images-outline"
-              label={`${template.requirements.flexibleMediaCount +
-                template.requirements.imageCount +
-                template.requirements.videoCount} media slots`}
+              label={`${totalMediaRequirements(template.requirements)} media slots`}
             />
             <InfoChip icon="layers-outline" label={`${template.layers.length} layers`} />
             <InfoChip icon="text-outline" label={`${template.requirements.textCount} text`} />
             <InfoChip icon="resize-outline" label={template.canvas.aspectRatio} />
           </View>
         </View>
+        <TemplateMetrics
+          aspectRatio={template.canvas.aspectRatio}
+          pageCount={template.canvas.pageCount ?? 1}
+          requirements={template.requirements}
+        />
       </ScrollView>
     </SafeAreaView>
   );

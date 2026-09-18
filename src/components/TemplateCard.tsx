@@ -4,6 +4,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { colors, radius } from '../constants/theme';
 import type { CollageTemplate } from '../types/collage';
 import { CollageCanvas } from './CollageCanvas';
+import { TemplateMetrics } from './TemplateMetrics';
 
 interface TemplateCardProps {
   template: CollageTemplate;
@@ -31,6 +32,12 @@ export const TemplateCard = memo(function TemplateCard({
       <Text style={styles.meta}>
         {template.metadata.category} · {template.canvas.aspectRatio}
       </Text>
+      <TemplateMetrics
+        aspectRatio={template.canvas.aspectRatio}
+        compact
+        pageCount={template.canvas.pageCount ?? 1}
+        requirements={template.requirements}
+      />
     </Pressable>
   );
 });

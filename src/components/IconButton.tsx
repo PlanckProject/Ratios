@@ -1,6 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
-import React from 'react';
+import React, { useRef } from 'react';
 import {
+  Animated,
   Pressable,
   StyleSheet,
   Text,
@@ -26,8 +27,11 @@ export function IconButton({
   tone = 'plain',
   style,
   disabled,
+  onPressIn,
+  onPressOut,
   ...props
 }: IconButtonProps): React.JSX.Element {
+  const pressScale = useRef(new Animated.Value(1)).current;
   const foreground =
     tone === 'light' || tone === 'accent'
       ? colors.accentInk
@@ -36,23 +40,49 @@ export function IconButton({
         : colors.text;
 
   return (
-    <Pressable
-      accessibilityRole="button"
-      disabled={disabled}
-      style={({ pressed }) => [
-        styles.base,
-        tone === 'surface' && styles.surface,
-        tone === 'light' && styles.light,
-        tone === 'accent' && styles.accent,
-        disabled && styles.disabled,
-        pressed && !disabled && styles.pressed,
-        style,
-      ]}
-      {...props}
+    <Animated.View
+      style={{
+        transform: [{ scale: pressScale }],
+      }}
     >
-      <Ionicons color={foreground} name={icon} size={size} />
-      {label ? <Text style={[styles.label, { color: foreground }]}>{label}</Text> : null}
-    </Pressable>
+      <Pressable
+        accessibilityRole="button"
+        disabled={disabled}
+        onPressIn={(event) => {
+          if (!disabled) {
+            Animated.spring(pressScale, {
+              friction: 8,
+              tension: 280,
+              toValue: 0.94,
+              useNativeDriver: true,
+            }).start();
+          }
+          onPressIn?.(event);
+        }}
+        onPressOut={(event) => {
+          Animated.spring(pressScale, {
+            friction: 8,
+            tension: 280,
+            toValue: 1,
+            useNativeDriver: true,
+          }).start();
+          onPressOut?.(event);
+        }}
+        style={({ pressed }) => [
+          styles.base,
+          tone === 'surface' && styles.surface,
+          tone === 'light' && styles.light,
+          tone === 'accent' && styles.accent,
+          disabled && styles.disabled,
+          pressed && !disabled && styles.pressed,
+          style,
+        ]}
+        {...props}
+      >
+        <Ionicons color={foreground} name={icon} size={size} />
+        {label ? <Text style={[styles.label, { color: foreground }]}>{label}</Text> : null}
+      </Pressable>
+    </Animated.View>
   );
 }
 
@@ -78,7 +108,6 @@ const styles = StyleSheet.create({
   },
   pressed: {
     opacity: 0.68,
-    transform: [{ scale: 0.97 }],
   },
   label: {
     fontSize: 11,

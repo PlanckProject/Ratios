@@ -7,13 +7,15 @@
     "userInterfaceStyle": "dark",
     "scheme": "ratios",
     "newArchEnabled": true,
+    "icon": "./assets/icon.png",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.ratios.collagestudio"
+      "bundleIdentifier": "org.planckproject.ratios"
     },
     "android": {
-      "package": "com.ratios.collagestudio",
+      "package": "org.planckproject.ratios",
       "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#090909"
       },
       "edgeToEdgeEnabled": true

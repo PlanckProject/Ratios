@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import {
+  Animated,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -14,53 +15,72 @@ import { colors, radius } from '../constants/theme';
 import { IconButton } from './IconButton';
 
 interface BottomSheetProps extends React.PropsWithChildren {
-  visible: boolean;
   title: string;
   onClose: () => void;
-  scroll?: boolean;
 }
 
 export function BottomSheet({
-  visible,
   title,
   onClose,
-  scroll = true,
   children,
 }: BottomSheetProps): React.JSX.Element {
-  const content = scroll ? (
-    <ScrollView
-      contentContainerStyle={styles.content}
-      keyboardShouldPersistTaps="handled"
-      showsVerticalScrollIndicator={false}
-    >
-      {children}
-    </ScrollView>
-  ) : (
-    <View style={styles.content}>{children}</View>
-  );
+  const progress = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const animation = Animated.spring(progress, {
+      friction: 11,
+      tension: 105,
+      toValue: 1,
+      useNativeDriver: true,
+    });
+    animation.start();
+    return () => animation.stop();
+  }, [progress]);
 
   return (
     <Modal
-      animationType="fade"
+      animationType="none"
       onRequestClose={onClose}
       presentationStyle="overFullScreen"
       transparent
-      visible={visible}
+      visible
     >
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={styles.full}
       >
-        <Pressable onPress={onClose} style={styles.scrim}>
-          <Pressable onPress={(event) => event.stopPropagation()} style={styles.sheet}>
-            <View style={styles.grabber} />
-            <View style={styles.header}>
-              <Text style={styles.title}>{title}</Text>
-              <IconButton icon="close" onPress={onClose} tone="surface" />
+        <View style={styles.scrim}>
+          <Pressable accessibilityLabel="Close sheet" onPress={onClose} style={StyleSheet.absoluteFill} />
+          <Animated.View
+            style={{
+              transform: [
+                {
+                  translateY: progress.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [42, 0],
+                  }),
+                },
+              ],
+            }}
+          >
+            <View style={styles.sheet}>
+              <View style={styles.grabber} />
+              <View style={styles.header}>
+                <Text style={styles.title}>{title}</Text>
+                <IconButton icon="close" onPress={onClose} tone="surface" />
+              </View>
+              <ScrollView
+                nestedScrollEnabled
+                style={styles.scroll}
+                contentContainerStyle={styles.content}
+                keyboardShouldPersistTaps="handled"
+                showsVerticalScrollIndicator
+              >
+                {children}
+              </ScrollView>
             </View>
-            {content}
-          </Pressable>
-        </Pressable>
+          </Animated.View>
+        </View>
       </KeyboardAvoidingView>
     </Modal>
   );
@@ -74,6 +94,10 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.58)',
     flex: 1,
     justifyContent: 'flex-end',
+  },
+  scroll: {
+    flexGrow: 0,
+    flexShrink: 1,
   },
   sheet: {
     backgroundColor: colors.surface,

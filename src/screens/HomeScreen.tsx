@@ -14,7 +14,6 @@ import { BrandMark } from '../components/BrandMark';
 import { ProjectCard } from '../components/ProjectCard';
 import { TemplateCard } from '../components/TemplateCard';
 import { colors, radius } from '../constants/theme';
-import { exportCollageJson } from '../services/jsonTransfer';
 import { useCollages } from '../store/CollageProvider';
 import type { CollageProject, CollageTemplate } from '../types/collage';
 import { IconButton } from '../components/IconButton';
@@ -116,9 +115,6 @@ export function HomeScreen({
           <ProjectCard
             onDelete={() => removeProject(item.id)}
             onDuplicate={() => duplicateProject(item.id)}
-            onExport={() => {
-              void exportCollageJson(item);
-            }}
             onOpen={() => onOpenProject(item)}
             project={item}
             width={cardWidth}

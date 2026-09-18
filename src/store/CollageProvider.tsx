@@ -100,13 +100,22 @@ function reducer(state: State, action: Action): State {
           ...state.localTemplates.filter((template) => template.id !== action.template.id),
         ],
       };
-    case 'UPDATE_PROJECT':
+    case 'UPDATE_PROJECT': {
+      const index = state.projects.findIndex((project) => project.id === action.project.id);
+      if (
+        index < 0 ||
+        (state.projects[index] === action.project &&
+          (!state.storageError || state.storageWriteBlocked))
+      ) {
+        return state;
+      }
+      const projects = [...state.projects];
+      projects[index] = action.project;
       return {
         ...state,
-        projects: state.projects.map((project) =>
-          project.id === action.project.id ? action.project : project,
-        ),
+        projects,
       };
+    }
     case 'REMOVE_PROJECT':
       return {
         ...state,
@@ -140,10 +149,9 @@ function reducer(state: State, action: Action): State {
         repositoryError: action.error,
       };
     case 'STORAGE_ERROR':
-      return {
-        ...state,
-        storageError: action.error,
-      };
+      return state.storageError === action.error
+        ? state
+        : { ...state, storageError: action.error };
   }
 }
 
@@ -173,28 +181,40 @@ interface StoredCollection<T> {
   error?: string;
 }
 
-function parseStoredProjects(value: string | null): StoredCollection<CollageProject> {
+function parseStoredDocuments(
+  value: string | null,
+  documentType: 'collage-project',
+): StoredCollection<CollageProject>;
+function parseStoredDocuments(
+  value: string | null,
+  documentType: 'collage-template',
+): StoredCollection<CollageTemplate>;
+function parseStoredDocuments(
+  value: string | null,
+  documentType: 'collage-project' | 'collage-template',
+): StoredCollection<CollageProject | CollageTemplate> {
   if (!value) {
     return { items: [] };
   }
+  const label = documentType === 'collage-project' ? 'project' : 'template';
   try {
     const parsed = JSON.parse(value) as unknown;
     if (!Array.isArray(parsed)) {
-      throw new Error('Saved project data is not an array.');
+      throw new Error(`Saved ${label} data is not an array.`);
     }
-    const items: CollageProject[] = [];
+    const items: Array<CollageProject | CollageTemplate> = [];
     const errors: string[] = [];
     parsed.forEach((item, index) => {
       try {
         const document = parseCollageDocument(item);
-        if (document.documentType !== 'collage-project') {
-          throw new Error('The item is not a project.');
+        if (document.documentType !== documentType) {
+          throw new Error(`The item is not a ${label}.`);
         }
         items.push(document);
       } catch (error: unknown) {
         errors.push(
-          `project ${index + 1}: ${
-            error instanceof Error ? error.message : 'invalid project'
+          `${label} ${index + 1}: ${
+            error instanceof Error ? error.message : `invalid ${label}`
           }`,
         );
       }
@@ -206,45 +226,7 @@ function parseStoredProjects(value: string | null): StoredCollection<CollageProj
   } catch (error: unknown) {
     return {
       items: [],
-      error: error instanceof Error ? error.message : 'Unable to parse saved projects.',
-    };
-  }
-}
-
-function parseStoredTemplates(value: string | null): StoredCollection<CollageTemplate> {
-  if (!value) {
-    return { items: [] };
-  }
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    if (!Array.isArray(parsed)) {
-      throw new Error('Saved template data is not an array.');
-    }
-    const items: CollageTemplate[] = [];
-    const errors: string[] = [];
-    parsed.forEach((item, index) => {
-      try {
-        const document = parseCollageDocument(item);
-        if (document.documentType !== 'collage-template') {
-          throw new Error('The item is not a template.');
-        }
-        items.push(document);
-      } catch (error: unknown) {
-        errors.push(
-          `template ${index + 1}: ${
-            error instanceof Error ? error.message : 'invalid template'
-          }`,
-        );
-      }
-    });
-    return {
-      items,
-      error: errors.length ? errors.join('; ') : undefined,
-    };
-  } catch (error: unknown) {
-    return {
-      items: [],
-      error: error instanceof Error ? error.message : 'Unable to parse saved templates.',
+      error: error instanceof Error ? error.message : `Unable to parse saved ${label}s.`,
     };
   }
 }
@@ -262,8 +244,8 @@ export function CollageProvider({ children }: React.PropsWithChildren): React.JS
         const projectsValue = pairs.find(([key]) => key === PROJECTS_KEY)?.[1] ?? null;
         const templatesValue = pairs.find(([key]) => key === TEMPLATES_KEY)?.[1] ?? null;
         const repositoryValue = pairs.find(([key]) => key === REPOSITORY_KEY)?.[1] ?? null;
-        const projectsResult = parseStoredProjects(projectsValue);
-        const templatesResult = parseStoredTemplates(templatesValue);
+        const projectsResult = parseStoredDocuments(projectsValue, 'collage-project');
+        const templatesResult = parseStoredDocuments(templatesValue, 'collage-template');
         const storageErrors = [
           projectsResult.error ? `Projects: ${projectsResult.error}` : null,
           templatesResult.error ? `Templates: ${templatesResult.error}` : null,
@@ -471,10 +453,15 @@ export function CollageProvider({ children }: React.PropsWithChildren): React.JS
     }
   }, [state.repositoryUrl]);
 
+  const templates = useMemo(
+    () => [...BUILTIN_TEMPLATES, ...state.localTemplates, ...state.remoteTemplates],
+    [state.localTemplates, state.remoteTemplates],
+  );
+
   const value = useMemo<CollageContextValue>(
     () => ({
       ...state,
-      templates: [...BUILTIN_TEMPLATES, ...state.localTemplates, ...state.remoteTemplates],
+      templates,
       createProject,
       createFromTemplate,
       importDocument,
@@ -486,6 +473,7 @@ export function CollageProvider({ children }: React.PropsWithChildren): React.JS
     }),
     [
       state,
+      templates,
       createProject,
       createFromTemplate,
       importDocument,

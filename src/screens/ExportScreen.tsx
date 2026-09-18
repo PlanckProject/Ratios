@@ -24,6 +24,7 @@ import {
 } from '../constants/ratios';
 import { colors, radius } from '../constants/theme';
 import { useCollages } from '../store/CollageProvider';
+import { getPageOrder } from '../utils/collage';
 
 type OutputType = 'image' | 'video';
 
@@ -39,14 +40,16 @@ interface ExportJob {
 }
 
 interface CompletedExport extends ExportJob {
-  uri: string;
-  savedToLibrary: boolean;
+  uris: string[];
+  savedCount: number;
 }
 
 interface ExportScreenProps {
   projectId: string;
   onBack: () => void;
 }
+
+const EXPORT_ALBUM_NAME = 'Ratios';
 
 function waitForRender(): Promise<void> {
   return new Promise((resolve) => {
@@ -107,6 +110,7 @@ export function ExportScreen({
   const [activeJob, setActiveJob] = useState<ExportJob | null>(null);
   const [completedExport, setCompletedExport] = useState<CompletedExport | null>(null);
   const [renderRun, setRenderRun] = useState(0);
+  const [renderPageIndex, setRenderPageIndex] = useState(0);
   const abortController = useRef<AbortController | null>(null);
   const canceled = useRef(false);
   const mounted = useRef(true);
@@ -163,15 +167,20 @@ export function ExportScreen({
     );
   }
 
+  const pageCount = Math.max(1, project.canvas.pageCount ?? 1);
+  const pageOrder = getPageOrder(project);
+
   const outputDestination = (
     job: ExportJob,
     extension: 'png' | 'mp4',
+    pageIndex: number,
   ): { nativePath: string; uri: string } => {
     const directory = FileSystem.cacheDirectory ?? FileSystem.documentDirectory;
     if (!directory) {
       throw new Error('No writable export directory is available.');
     }
-    const uri = `${directory}${safeFileName(project.name)}-${job.preset}-${Date.now()}.${extension}`;
+    const pageSuffix = pageCount > 1 ? `-page-${pageIndex + 1}` : '';
+    const uri = `${directory}${safeFileName(project.name)}-${job.preset}${pageSuffix}-${Date.now()}.${extension}`;
     return {
       nativePath: toNativePath(uri),
       uri,
@@ -189,11 +198,11 @@ export function ExportScreen({
     if (!completedExport) {
       return;
     }
-    await deleteOutput(completedExport.uri);
+    await Promise.all(completedExport.uris.map((uri) => deleteOutput(uri)));
   };
 
-  const exportImage = async (job: ExportJob): Promise<string> => {
-    const destination = outputDestination(job, 'png');
+  const exportImage = async (job: ExportJob, pageIndex: number): Promise<string> => {
+    const destination = outputDestination(job, 'png', pageIndex);
     await new Promise((resolve) => setTimeout(resolve, 250));
     const result = await recorder.snapshot({
       output: destination.nativePath,
@@ -206,13 +215,13 @@ export function ExportScreen({
     return toFileUri(result || destination.nativePath);
   };
 
-  const exportVideo = async (job: ExportJob): Promise<string> => {
+  const exportVideo = async (job: ExportJob, pageIndex: number): Promise<string> => {
     const durationMs = project.canvas.durationMs;
     const totalFrames = Math.max(
       1,
       Math.round((durationMs * job.fps) / 1000),
     );
-    const destination = outputDestination(job, 'mp4');
+    const destination = outputDestination(job, 'mp4', pageIndex);
     const controller = new AbortController();
     abortController.current = controller;
 
@@ -235,7 +244,9 @@ export function ExportScreen({
             durationMs,
           );
           setTimelineMs(frameTimeMs);
-          setProgress((frameIndex + 1) / totalFrames);
+          setProgress(
+            (pageIndex + (frameIndex + 1) / totalFrames) / pageCount,
+          );
           await waitForRender();
           await new Promise((resolve) => setTimeout(resolve, 8));
         },
@@ -246,13 +257,40 @@ export function ExportScreen({
     }
   };
 
-  const saveToLibrary = async (uri: string): Promise<boolean> => {
+  const saveAssetsToLibrary = async (uris: string[]): Promise<number> => {
     const permission = await MediaLibrary.requestPermissionsAsync(true);
     if (!permission.granted) {
-      return false;
+      return 0;
     }
-    await MediaLibrary.saveToLibraryAsync(uri);
-    return true;
+
+    if (uris.length === 0) {
+      return 0;
+    }
+    const firstUri = uris[0];
+    if (!firstUri) {
+      return 0;
+    }
+
+    let album = await MediaLibrary.Album.get(EXPORT_ALBUM_NAME);
+    let savedCount = 0;
+
+    if (!album) {
+      // Keep the generated cache file available for sharing and cleanup while
+      // copying the first export into the device's native media location.
+      album = await MediaLibrary.Album.create(
+        EXPORT_ALBUM_NAME,
+        [firstUri],
+        false,
+      );
+      savedCount = 1;
+    }
+
+    for (const uri of uris.slice(savedCount)) {
+      await MediaLibrary.Asset.create(uri, album);
+      savedCount += 1;
+    }
+
+    return savedCount;
   };
 
   const generate = async () => {
@@ -267,31 +305,44 @@ export function ExportScreen({
     setExporting(true);
     setActiveJob(job);
     setTimelineMs(0);
+    setRenderPageIndex(0);
     setProgress(0);
     setRenderRun((value) => value + 1);
     try {
       await removePreviousOutput();
       setCompletedExport(null);
-      await waitForRender();
-      const uri =
-        job.outputType === 'image'
-          ? await exportImage(job)
-          : await exportVideo(job);
+      const uris: string[] = [];
+      for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
+        if (canceled.current) {
+          return;
+        }
+        const logicalPageIndex = pageOrder[pageIndex] ?? pageIndex;
+        setRenderPageIndex(logicalPageIndex);
+        await waitForRender();
+        const uri =
+          job.outputType === 'image'
+            ? await exportImage(job, pageIndex)
+            : await exportVideo(job, pageIndex);
+        uris.push(uri);
+        if (job.outputType === 'image') {
+          setProgress((pageIndex + 1) / pageCount);
+        }
+      }
       if (canceled.current) {
-        await deleteOutput(uri);
+        await Promise.all(uris.map((uri) => deleteOutput(uri)));
         return;
       }
-      const savedToLibrary = await saveToLibrary(uri);
+      const savedCount = await saveAssetsToLibrary(uris);
       if (canceled.current) {
-        await deleteOutput(uri);
+        await Promise.all(uris.map((uri) => deleteOutput(uri)));
         return;
       }
       if (mounted.current) {
         setProgress(1);
         setCompletedExport({
           ...job,
-          uri,
-          savedToLibrary,
+          uris,
+          savedCount,
         });
       }
     } catch (error: unknown) {
@@ -317,12 +368,19 @@ export function ExportScreen({
     if (!completedExport) {
       return;
     }
+    const [uri] = completedExport.uris;
+    if (!uri) {
+      return;
+    }
     if (!(await Sharing.isAvailableAsync())) {
       Alert.alert('Sharing unavailable', 'This device cannot open a share sheet.');
       return;
     }
-    await Sharing.shareAsync(completedExport.uri, {
-      dialogTitle: `Share ${project.name}`,
+    await Sharing.shareAsync(uri, {
+      dialogTitle:
+        completedExport.uris.length > 1
+          ? `Share ${project.name} page 1`
+          : `Share ${project.name}`,
       mimeType:
         completedExport.outputType === 'image' ? 'image/png' : 'video/mp4',
       UTI:
@@ -374,6 +432,8 @@ export function ExportScreen({
             document={project}
             key={renderRun}
             maxHeight={previewSize.height}
+            pageCount={pageCount}
+            pageIndex={renderPageIndex}
             timelineMs={
               exporting && activeJob?.outputType === 'video'
                 ? timelineMs
@@ -435,10 +495,10 @@ export function ExportScreen({
             </Text>
             <Text style={styles.outputMeta}>
               {displayedOutputType === 'image'
-                ? 'Lossless PNG'
+                ? `Lossless PNG · ${pageCount} page${pageCount === 1 ? '' : 's'}`
                 : `H.264 · ${renderJob?.fps ?? project.canvas.fps} fps · ${
                     displayedPreset === 'max' ? '45' : '16'
-                  } Mbps`}
+                  } Mbps · ${pageCount} page${pageCount === 1 ? '' : 's'}`}
             </Text>
           </View>
           <View style={styles.ratioBadge}>
@@ -482,20 +542,17 @@ export function ExportScreen({
             <View style={styles.successCopy}>
               <Text style={styles.successTitle}>Export ready</Text>
               <Text style={styles.successMeta}>
-                {completedExport.savedToLibrary
-                  ? 'Saved to your media library.'
-                  : 'Use Share to choose a destination.'}
+                {completedExport.savedCount === completedExport.uris.length
+                  ? `${completedExport.uris.length} output${
+                      completedExport.uris.length === 1 ? '' : 's'
+                    } saved to your media library.`
+                  : `${completedExport.savedCount} of ${completedExport.uris.length} outputs saved. Use Share for page 1.`}
               </Text>
             </View>
             <IconButton icon="share-outline" onPress={() => void shareOutput()} tone="surface" />
           </View>
         ) : null}
 
-        <Text style={styles.qualityNote}>
-          Max renders at twice Instagram’s standard 1080-pixel width. Height is calculated
-          directly from the selected collage ratio; the editor preview is never used as the
-          export resolution.
-        </Text>
       </ScrollView>
     </SafeAreaView>
   );
@@ -842,13 +899,6 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     fontSize: 11,
     marginTop: 3,
-  },
-  qualityNote: {
-    color: colors.textMuted,
-    fontSize: 12,
-    lineHeight: 18,
-    marginTop: 18,
-    textAlign: 'center',
   },
   missing: {
     alignItems: 'center',

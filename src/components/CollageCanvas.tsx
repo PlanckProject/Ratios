@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useVideoPlayer, VideoView } from 'expo-video';
-import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
   AppState,
@@ -12,6 +12,7 @@ import {
   Text,
   View,
   type LayoutChangeEvent,
+  type PanResponderGestureState,
   type StyleProp,
   type ViewStyle,
 } from 'react-native';
@@ -30,19 +31,24 @@ import type {
 interface CollageCanvasProps {
   document: CollageDocument;
   maxHeight?: number;
+  pageIndex?: number;
+  pageCount?: number;
   editable?: boolean;
   animate?: boolean;
   timelineMs?: number;
   videoFrameMs?: number;
   selectedLayerId?: string | null;
   onSelectLayer?: (layerId: string | null) => void;
-  onUpdateTransform?: (layerId: string, transform: LayerTransform) => void;
+  onUpdateTransform?: (layerId: string, transform: LayerTransform) => LayerTransform | void;
   onTransformStart?: () => void;
   onTransformEnd?: () => void;
   onRequestFill?: (layerId: string) => void;
   onDuplicateLayer?: (layerId: string) => void;
   onDeleteLayer?: (layerId: string) => void;
   onToggleLock?: (layerId: string) => void;
+  snapEnabled?: boolean;
+  onToggleSnap?: () => void;
+  onCanvasPress?: () => void;
   style?: StyleProp<ViewStyle>;
 }
 
@@ -55,9 +61,11 @@ function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(Math.max(value, minimum), maximum);
 }
 
-export function CollageCanvas({
+export const CollageCanvas = memo(function CollageCanvas({
   document,
   maxHeight = 520,
+  pageIndex = 0,
+  pageCount: pageCountProp,
   editable = false,
   animate = false,
   timelineMs,
@@ -71,10 +79,15 @@ export function CollageCanvas({
   onDuplicateLayer,
   onDeleteLayer,
   onToggleLock,
+  snapEnabled = false,
+  onToggleSnap,
+  onCanvasPress,
   style,
 }: CollageCanvasProps): React.JSX.Element {
   const [availableWidth, setAvailableWidth] = useState(0);
   const ratio = ASPECT_RATIOS[document.canvas.aspectRatio];
+  const resolvedPageCount = Math.max(1, pageCountProp ?? document.canvas.pageCount ?? 1);
+  const resolvedPageIndex = clamp(pageIndex, 0, resolvedPageCount - 1);
   const canvasSize = useMemo<CanvasSize>(() => {
     if (!availableWidth) {
       return { width: 0, height: 0 };
@@ -92,73 +105,118 @@ export function CollageCanvas({
   const handleLayout = (event: LayoutChangeEvent) => {
     setAvailableWidth(event.nativeEvent.layout.width);
   };
+  const pageLayers = useMemo(
+    () =>
+      document.layers.filter(
+        (layer) =>
+          layer.visible &&
+          (layerIsOnPage(layer, resolvedPageIndex) ||
+            (editable && layer.id === selectedLayerId)) &&
+          (timelineMs === undefined ||
+            (timelineMs >= layer.timing.startMs && timelineMs <= layer.timing.endMs)),
+      ),
+    [document.layers, editable, resolvedPageIndex, selectedLayerId, timelineMs],
+  );
 
   return (
     <View onLayout={handleLayout} style={[styles.stage, style]}>
       {canvasSize.width > 0 ? (
-        <Pressable
-          onPress={() => editable && onSelectLayer?.(null)}
+        <View
           style={[
             styles.canvas,
             {
-              backgroundColor: document.canvas.background.color,
               height: canvasSize.height,
               width: canvasSize.width,
             },
           ]}
         >
-          {document.canvas.background.type === 'image' &&
-          document.canvas.background.source ? (
-            <Image
-              blurRadius={document.canvas.background.blur}
-              resizeMode="cover"
-              source={{ uri: document.canvas.background.source.uri }}
-              style={styles.backgroundImage}
-            />
+          <View
+            pointerEvents="none"
+            style={[
+              styles.canvasSurface,
+              { backgroundColor: document.canvas.background.color },
+            ]}
+          >
+            {document.canvas.background.type === 'image' &&
+            document.canvas.background.source ? (
+              <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+                <Image
+                  blurRadius={document.canvas.background.blur}
+                  resizeMode="cover"
+                  source={{ uri: document.canvas.background.source.uri }}
+                  style={styles.backgroundImage}
+                />
+              </View>
+            ) : null}
+            {pageLayers.map((layer) => (
+              <EditableLayer
+                animate={animate}
+                canvasSize={canvasSize}
+                key={layer.id}
+                layer={layer}
+                timelineMs={timelineMs}
+                videoFrameMs={videoFrameMs}
+                pageIndex={resolvedPageIndex}
+                selected={selectedLayerId === layer.id}
+              />
+            ))}
+            {document.editor.showGrid ? <GridOverlay /> : null}
+            {document.editor.showSafeArea ? (
+              <View
+                pointerEvents="none"
+                style={[
+                  styles.safeArea,
+                  {
+                    bottom: `${document.canvas.safeArea.bottom * 100}%`,
+                    left: `${document.canvas.safeArea.left * 100}%`,
+                    right: `${document.canvas.safeArea.right * 100}%`,
+                    top: `${document.canvas.safeArea.top * 100}%`,
+                  },
+                ]}
+              />
+            ) : null}
+          </View>
+          {editable ? (
+            <View pointerEvents="box-none" style={styles.editorOverlay}>
+              <Pressable
+                onPress={() => {
+                  onCanvasPress?.();
+                  onSelectLayer?.(null);
+                }}
+                style={StyleSheet.absoluteFill}
+              />
+              {pageLayers.map((layer) => (
+                <LayerChrome
+                  canvasSize={canvasSize}
+                  key={`chrome-${layer.id}`}
+                  layer={layer}
+                  pageCount={resolvedPageCount}
+                  pageIndex={resolvedPageIndex}
+                  selected={selectedLayerId === layer.id}
+                  onRequestFill={onRequestFill}
+                  onSelect={onSelectLayer}
+                  onTransformEnd={onTransformEnd}
+                  onTransformStart={onTransformStart}
+                  onUpdateTransform={onUpdateTransform}
+                />
+              ))}
+            </View>
           ) : null}
-          {document.layers.map((layer) =>
-            timelineMs === undefined ||
-            (timelineMs >= layer.timing.startMs && timelineMs <= layer.timing.endMs) ? (
-            <EditableLayer
-              animate={animate}
-              canvasSize={canvasSize}
-              editable={editable}
-              key={layer.id}
-              layer={layer}
-              timelineMs={timelineMs}
-              videoFrameMs={videoFrameMs}
+          {editable && selectedLayerId ? (
+            <SelectionActions
+              layer={document.layers.find((layer) => layer.id === selectedLayerId) ?? null}
               onDelete={onDeleteLayer}
               onDuplicate={onDuplicateLayer}
-              onRequestFill={onRequestFill}
-              onSelect={onSelectLayer}
               onToggleLock={onToggleLock}
-              onTransformEnd={onTransformEnd}
-              onTransformStart={onTransformStart}
-              onUpdateTransform={onUpdateTransform}
-              selected={selectedLayerId === layer.id}
-            />
-            ) : null,
-          )}
-          {document.editor.showGrid ? <GridOverlay /> : null}
-          {document.editor.showSafeArea ? (
-            <View
-              pointerEvents="none"
-              style={[
-                styles.safeArea,
-                {
-                  bottom: `${document.canvas.safeArea.bottom * 100}%`,
-                  left: `${document.canvas.safeArea.left * 100}%`,
-                  right: `${document.canvas.safeArea.right * 100}%`,
-                  top: `${document.canvas.safeArea.top * 100}%`,
-                },
-              ]}
+              onToggleSnap={onToggleSnap}
+              snapEnabled={snapEnabled}
             />
           ) : null}
-        </Pressable>
+        </View>
       ) : null}
     </View>
   );
-}
+});
 
 function GridOverlay(): React.JSX.Element {
   return (
@@ -173,155 +231,106 @@ function GridOverlay(): React.JSX.Element {
   );
 }
 
+function layerIsOnPage(layer: CollageLayer, pageIndex: number): boolean {
+  const layerEnd = layer.transform.x + layer.transform.width;
+  return layer.visible && layerEnd > pageIndex && layer.transform.x < pageIndex + 1;
+}
+
+function layerFrameStyle(
+  transform: LayerTransform,
+  canvasSize: CanvasSize,
+  pageIndex: number,
+) {
+  return {
+    height: transform.height * canvasSize.height,
+    left: (transform.x - pageIndex) * canvasSize.width,
+    top: transform.y * canvasSize.height,
+    width: transform.width * canvasSize.width,
+  };
+}
+
+type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
+
+function resizeByCorner(
+  origin: LayerTransform,
+  corner: ResizeCorner,
+  dx: number,
+  dy: number,
+): LayerTransform {
+  let x = origin.x;
+  let y = origin.y;
+  let width = origin.width;
+  let height = origin.height;
+
+  if (corner === 'ne' || corner === 'se') {
+    width = origin.width + dx;
+  } else {
+    width = origin.width - dx;
+    x = origin.x + dx;
+  }
+
+  if (corner === 'sw' || corner === 'se') {
+    height = origin.height + dy;
+  } else {
+    height = origin.height - dy;
+    y = origin.y + dy;
+  }
+
+  if (width < 0.01) {
+    if (corner === 'nw' || corner === 'sw') {
+      x = origin.x + origin.width - 0.01;
+    }
+    width = 0.01;
+  }
+  if (height < 0.01) {
+    if (corner === 'nw' || corner === 'ne') {
+      y = origin.y + origin.height - 0.01;
+    }
+    height = 0.01;
+  }
+
+  return { ...origin, x, y, width, height };
+}
+
 interface EditableLayerProps {
   layer: CollageLayer;
   canvasSize: CanvasSize;
-  editable: boolean;
+  pageIndex: number;
   animate: boolean;
   timelineMs?: number;
   videoFrameMs?: number;
   selected: boolean;
-  onSelect?: (layerId: string | null) => void;
-  onUpdateTransform?: (layerId: string, transform: LayerTransform) => void;
-  onTransformStart?: () => void;
-  onTransformEnd?: () => void;
-  onRequestFill?: (layerId: string) => void;
-  onDuplicate?: (layerId: string) => void;
-  onDelete?: (layerId: string) => void;
-  onToggleLock?: (layerId: string) => void;
 }
 
 const EditableLayer = memo(function EditableLayer({
   layer,
   canvasSize,
-  editable,
+  pageIndex,
   animate,
   timelineMs,
   videoFrameMs,
   selected,
-  onSelect,
-  onUpdateTransform,
-  onTransformStart,
-  onTransformEnd,
-  onRequestFill,
-  onDuplicate,
-  onDelete,
-  onToggleLock,
 }: EditableLayerProps): React.JSX.Element | null {
-  const layerRef = useRef(layer);
-  layerRef.current = layer;
-  const dragStart = useRef(layer.transform);
-  const resizeStart = useRef(layer.transform);
-
-  const moveResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => editable,
-        onMoveShouldSetPanResponder: (_, gesture) =>
-          editable && Math.abs(gesture.dx) + Math.abs(gesture.dy) > 2,
-        onPanResponderGrant: () => {
-          const currentLayer = layerRef.current;
-          dragStart.current = currentLayer.transform;
-          onSelect?.(currentLayer.id);
-          onTransformStart?.();
-        },
-        onPanResponderMove: (_, gesture) => {
-          const currentLayer = layerRef.current;
-          if (currentLayer.locked) {
-            return;
-          }
-          onUpdateTransform?.(currentLayer.id, {
-            ...dragStart.current,
-            x: clamp(dragStart.current.x + gesture.dx / canvasSize.width, -0.2, 0.95),
-            y: clamp(dragStart.current.y + gesture.dy / canvasSize.height, -0.2, 0.95),
-          });
-        },
-        onPanResponderRelease: (_, gesture) => {
-          const currentLayer = layerRef.current;
-          if (
-            currentLayer.type === 'media' &&
-            !currentLayer.source &&
-            Math.abs(gesture.dx) < 4 &&
-            Math.abs(gesture.dy) < 4
-          ) {
-            onRequestFill?.(currentLayer.id);
-          }
-          onTransformEnd?.();
-        },
-        onPanResponderTerminate: onTransformEnd,
-      }),
-    [
-      canvasSize.height,
-      canvasSize.width,
-      editable,
-      onRequestFill,
-      onSelect,
-      onTransformEnd,
-      onTransformStart,
-      onUpdateTransform,
-    ],
-  );
-
-  const resizeResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => editable && !layerRef.current.locked,
-        onMoveShouldSetPanResponder: () => editable && !layerRef.current.locked,
-        onPanResponderGrant: () => {
-          resizeStart.current = layerRef.current.transform;
-          onTransformStart?.();
-        },
-        onPanResponderMove: (_, gesture) => {
-          onUpdateTransform?.(layerRef.current.id, {
-            ...resizeStart.current,
-            width: clamp(
-              resizeStart.current.width + gesture.dx / canvasSize.width,
-              0.08,
-              1.2,
-            ),
-            height: clamp(
-              resizeStart.current.height + gesture.dy / canvasSize.height,
-              0.06,
-              1.2,
-            ),
-          });
-        },
-        onPanResponderRelease: onTransformEnd,
-        onPanResponderTerminate: onTransformEnd,
-      }),
-    [
-      canvasSize.height,
-      canvasSize.width,
-      editable,
-      onTransformEnd,
-      onTransformStart,
-      onUpdateTransform,
-    ],
-  );
-
-  if (!layer.visible) {
+  if (!layerIsOnPage(layer, pageIndex)) {
     return null;
   }
 
-  const frameStyle: ViewStyle = {
-    height: layer.transform.height * canvasSize.height,
-    left: layer.transform.x * canvasSize.width,
-    opacity: layer.opacity,
-    top: layer.transform.y * canvasSize.height,
-    transform: [
-      { rotate: `${layer.transform.rotation}deg` },
-      { scaleX: layer.transform.scaleX },
-      { scaleY: layer.transform.scaleY },
-    ],
-    width: layer.transform.width * canvasSize.width,
-    zIndex: layer.zIndex,
-  };
-
   return (
     <View
-      {...(editable ? moveResponder.panHandlers : {})}
-      pointerEvents={editable ? 'auto' : 'none'}
-      style={[styles.layer, frameStyle]}
+      pointerEvents="none"
+      style={[
+        styles.layer,
+        layerFrameStyle(layer.transform, canvasSize, pageIndex),
+        {
+          opacity: layer.opacity,
+          transform: [
+            { rotate: `${layer.transform.rotation}deg` },
+            { scaleX: layer.transform.scaleX },
+            { scaleY: layer.transform.scaleY },
+          ],
+          zIndex: selected ? 10000 + layer.zIndex : layer.zIndex,
+        },
+      ]}
     >
       <LayerContent
         animate={animate}
@@ -330,36 +339,318 @@ const EditableLayer = memo(function EditableLayer({
         timelineMs={timelineMs}
         videoFrameMs={videoFrameMs}
       />
-      {selected && editable ? (
+    </View>
+  );
+});
+
+interface LayerChromeProps {
+  layer: CollageLayer;
+  canvasSize: CanvasSize;
+  pageIndex: number;
+  pageCount: number;
+  selected: boolean;
+  onSelect?: (layerId: string | null) => void;
+  onUpdateTransform?: (layerId: string, transform: LayerTransform) => LayerTransform | void;
+  onTransformStart?: () => void;
+  onTransformEnd?: () => void;
+  onRequestFill?: (layerId: string) => void;
+}
+
+const LayerChrome = memo(function LayerChrome({
+  layer,
+  canvasSize,
+  pageIndex,
+  pageCount,
+  selected,
+  onSelect,
+  onUpdateTransform,
+  onTransformStart,
+  onTransformEnd,
+  onRequestFill,
+}: LayerChromeProps): React.JSX.Element | null {
+  const layerRef = useRef(layer);
+  layerRef.current = layer;
+  const callbacks = {
+    onSelect,
+    onUpdateTransform,
+    onTransformStart,
+    onTransformEnd,
+    onRequestFill,
+  };
+  const callbacksRef = useRef(callbacks);
+  callbacksRef.current = callbacks;
+  const origin = useRef(layer.transform);
+  const [transforming, setTransforming] = useState(false);
+  const canDrag = selected && !layer.locked;
+
+  const finishGesture = useCallback(() => {
+    setTransforming(false);
+    callbacksRef.current.onTransformEnd?.();
+  }, []);
+
+  const responders = useMemo(() => {
+    if (!canDrag) {
+      return null;
+    }
+
+    const begin = () => {
+      origin.current = { ...layerRef.current.transform };
+      setTransforming(true);
+      callbacksRef.current.onSelect?.(layerRef.current.id);
+      callbacksRef.current.onTransformStart?.();
+    };
+
+    const delta = (gesture: PanResponderGestureState) => ({
+      dx: gesture.dx / canvasSize.width,
+      dy: gesture.dy / canvasSize.height,
+    });
+
+    const moveTo = (gesture: PanResponderGestureState) => {
+      const { dx, dy } = delta(gesture);
+      callbacksRef.current.onUpdateTransform?.(layerRef.current.id, {
+        ...origin.current,
+        x: clamp(origin.current.x + dx, -0.2, pageCount - 0.05),
+        y: clamp(origin.current.y + dy, -0.2, 0.95),
+      });
+    };
+
+    const createMove = () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () =>
+          selected && !layerRef.current.locked,
+        onMoveShouldSetPanResponder: () =>
+          selected && !layerRef.current.locked,
+        onPanResponderTerminationRequest: () => false,
+        onShouldBlockNativeResponder: () => true,
+        onPanResponderGrant: begin,
+        onPanResponderMove: (_, gesture) => moveTo(gesture),
+        onPanResponderRelease: (_, gesture) => {
+          const { dx, dy } = delta(gesture);
+          const moved = Math.abs(dx) + Math.abs(dy) > 0.004;
+          if (moved) {
+            moveTo(gesture);
+          } else if (
+            layerRef.current.type === 'media' &&
+            !layerRef.current.source
+          ) {
+            callbacksRef.current.onRequestFill?.(layerRef.current.id);
+          }
+          finishGesture();
+        },
+        onPanResponderTerminate: finishGesture,
+      });
+
+    const createCorner = (corner: ResizeCorner) =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => !layerRef.current.locked,
+        onStartShouldSetPanResponderCapture: () => !layerRef.current.locked,
+        onMoveShouldSetPanResponder: () => !layerRef.current.locked,
+        onPanResponderTerminationRequest: () => false,
+        onShouldBlockNativeResponder: () => true,
+        onPanResponderGrant: begin,
+        onPanResponderMove: (_, gesture) => {
+          const { dx, dy } = delta(gesture);
+          callbacksRef.current.onUpdateTransform?.(
+            layerRef.current.id,
+            resizeByCorner(origin.current, corner, dx, dy),
+          );
+        },
+        onPanResponderRelease: (_, gesture) => {
+          const { dx, dy } = delta(gesture);
+          callbacksRef.current.onUpdateTransform?.(
+            layerRef.current.id,
+            resizeByCorner(origin.current, corner, dx, dy),
+          );
+          finishGesture();
+        },
+        onPanResponderTerminate: finishGesture,
+      });
+
+    const rotate = PanResponder.create({
+      onStartShouldSetPanResponder: () => !layerRef.current.locked,
+      onStartShouldSetPanResponderCapture: () => !layerRef.current.locked,
+      onMoveShouldSetPanResponder: () => !layerRef.current.locked,
+      onPanResponderTerminationRequest: () => false,
+      onShouldBlockNativeResponder: () => true,
+      onPanResponderGrant: begin,
+      onPanResponderMove: (_, gesture) => {
+        const { dx } = delta(gesture);
+        callbacksRef.current.onUpdateTransform?.(layerRef.current.id, {
+          ...origin.current,
+          rotation: origin.current.rotation + dx * 180,
+        });
+      },
+      onPanResponderRelease: (_, gesture) => {
+        const { dx } = delta(gesture);
+        callbacksRef.current.onUpdateTransform?.(layerRef.current.id, {
+          ...origin.current,
+          rotation: origin.current.rotation + dx * 180,
+        });
+        finishGesture();
+      },
+      onPanResponderTerminate: finishGesture,
+    });
+
+    return {
+      move: createMove(),
+      nw: createCorner('nw'),
+      ne: createCorner('ne'),
+      sw: createCorner('sw'),
+      se: createCorner('se'),
+      rotate,
+    };
+  }, [
+    canDrag,
+    canvasSize.height,
+    canvasSize.width,
+    finishGesture,
+    pageCount,
+    selected,
+  ]);
+
+  if (!layer.visible || (!transforming && !layerIsOnPage(layer, pageIndex))) {
+    return null;
+  }
+
+  return (
+    <View
+      pointerEvents="box-none"
+      style={[
+        styles.layerChrome,
+        layerFrameStyle(layer.transform, canvasSize, pageIndex),
+        {
+          transform: [
+            { rotate: `${layer.transform.rotation}deg` },
+            { scaleX: layer.transform.scaleX },
+            { scaleY: layer.transform.scaleY },
+          ],
+          zIndex: selected ? 10000 + layer.zIndex : layer.zIndex,
+        },
+      ]}
+    >
+      {responders ? (
+        <View
+          collapsable={false}
+          {...responders.move.panHandlers}
+          style={StyleSheet.absoluteFill}
+        />
+      ) : (
+        <Pressable
+          onPress={() => onSelect?.(layer.id)}
+          style={StyleSheet.absoluteFill}
+        />
+      )}
+      {selected ? (
         <>
           <View pointerEvents="none" style={styles.selectionBorder} />
-          <View style={styles.contextPill}>
-            <Pressable hitSlop={8} onPress={() => onDelete?.(layer.id)}>
-              <Ionicons color={colors.accentInk} name="trash-outline" size={18} />
-            </Pressable>
-            <Pressable hitSlop={8} onPress={() => onDuplicate?.(layer.id)}>
-              <Ionicons color={colors.accentInk} name="copy-outline" size={18} />
-            </Pressable>
-            <Pressable hitSlop={8} onPress={() => onToggleLock?.(layer.id)}>
-              <Ionicons
-                color={colors.accentInk}
-                name={layer.locked ? 'lock-closed' : 'lock-open-outline'}
-                size={18}
-              />
-            </Pressable>
-          </View>
-          <View pointerEvents="none" style={[styles.handle, styles.handleTopLeft]} />
-          <View pointerEvents="none" style={[styles.handle, styles.handleTopRight]} />
-          <View pointerEvents="none" style={[styles.handle, styles.handleBottomLeft]} />
-          <View
-            {...resizeResponder.panHandlers}
-            style={[styles.handle, styles.handleBottomRight]}
-          />
+          {responders ? (
+            <>
+              <View
+                {...responders.nw.panHandlers}
+                hitSlop={12}
+                style={[styles.handleHit, styles.handleHitTopLeft]}
+              >
+                <View pointerEvents="none" style={styles.handleKnob} />
+              </View>
+              <View
+                {...responders.ne.panHandlers}
+                hitSlop={12}
+                style={[styles.handleHit, styles.handleHitTopRight]}
+              >
+                <View pointerEvents="none" style={styles.handleKnob} />
+              </View>
+              <View
+                {...responders.sw.panHandlers}
+                hitSlop={12}
+                style={[styles.handleHit, styles.handleHitBottomLeft]}
+              >
+                <View pointerEvents="none" style={styles.handleKnob} />
+              </View>
+              <View
+                {...responders.se.panHandlers}
+                hitSlop={12}
+                style={[styles.handleHit, styles.handleHitBottomRight]}
+              >
+                <View pointerEvents="none" style={styles.handleKnob} />
+              </View>
+              <View pointerEvents="none" style={styles.rotationStem} />
+              <View
+                {...responders.rotate.panHandlers}
+                hitSlop={12}
+                style={[styles.handleHit, styles.handleHitRotation]}
+              >
+                <View pointerEvents="none" style={styles.handleKnob} />
+              </View>
+            </>
+          ) : null}
         </>
       ) : null}
     </View>
   );
 });
+
+function SelectionActions({
+  layer,
+  onDelete,
+  onDuplicate,
+  onToggleLock,
+  onToggleSnap,
+  snapEnabled,
+}: {
+  layer: CollageLayer | null;
+  onDelete?: (layerId: string) => void;
+  onDuplicate?: (layerId: string) => void;
+  onToggleLock?: (layerId: string) => void;
+  onToggleSnap?: () => void;
+  snapEnabled: boolean;
+}): React.JSX.Element | null {
+  if (!layer) {
+    return null;
+  }
+
+  return (
+    <Animated.View style={styles.contextPill}>
+      {layer.type !== 'media' ? (
+        <Pressable
+          accessibilityLabel="Delete layer"
+          hitSlop={8}
+          onPress={() => onDelete?.(layer.id)}
+          style={styles.contextAction}
+        >
+          <Ionicons color={colors.accentInk} name="trash-outline" size={18} />
+        </Pressable>
+      ) : null}
+      <Pressable
+        accessibilityLabel={snapEnabled ? 'Disable snapping' : 'Enable snapping'}
+        hitSlop={8}
+        onPress={onToggleSnap}
+        style={[styles.contextAction, snapEnabled && styles.contextActionActive]}
+      >
+        <Ionicons color={colors.accentInk} name="magnet-outline" size={18} />
+      </Pressable>
+      <Pressable
+        accessibilityLabel="Duplicate layer"
+        hitSlop={8}
+        onPress={() => onDuplicate?.(layer.id)}
+        style={styles.contextAction}
+      >
+        <Ionicons color={colors.accentInk} name="copy-outline" size={18} />
+      </Pressable>
+      <Pressable
+        accessibilityLabel={layer.locked ? 'Unlock layer' : 'Lock layer'}
+        hitSlop={8}
+        onPress={() => onToggleLock?.(layer.id)}
+        style={styles.contextAction}
+      >
+        <Ionicons
+          color={colors.accentInk}
+          name={layer.locked ? 'lock-closed' : 'lock-open-outline'}
+          size={18}
+        />
+      </Pressable>
+    </Animated.View>
+  );
+}
 
 function LayerContent({
   layer,
@@ -436,18 +727,11 @@ function MediaLayerContent({
           </Text>
         </View>
       ) : layer.mediaKind === 'video' || layer.source.mimeType?.startsWith('video/') ? (
-        animate || timelineMs !== undefined || videoFrameMs !== undefined ? (
-          <VideoLayerContent
-            layer={layer}
-            timelineMs={timelineMs ?? videoFrameMs}
-          />
-        ) : (
-          <View style={[styles.fill, styles.videoPoster]}>
-            <View pointerEvents="none" style={styles.videoBadge}>
-              <Ionicons color={colors.text} name="play" size={16} />
-            </View>
-          </View>
-        )
+        <VideoLayerContent
+          animate={animate}
+          layer={layer}
+          timelineMs={timelineMs ?? videoFrameMs}
+        />
       ) : (
         <Image
           resizeMode={layer.fit === 'fill' ? 'stretch' : layer.fit}
@@ -473,18 +757,29 @@ function MediaLayerContent({
 
 function VideoLayerContent({
   layer,
+  animate,
   timelineMs,
 }: {
   layer: MediaLayer;
+  animate: boolean;
   timelineMs?: number;
 }): React.JSX.Element {
   const [appActive, setAppActive] = useState(AppState.currentState === 'active');
+  const [manualPlayback, setManualPlayback] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(false);
   const player = useVideoPlayer(layer.source?.uri ?? '', (instance) => {
     instance.loop = layer.playback.loop;
     instance.muted = layer.playback.muted;
     instance.playbackRate = layer.playback.speed;
     instance.currentTime = layer.playback.trimStartMs / 1000;
   });
+
+  useEffect(() => {
+    const subscription = player.addListener('playingChange', ({ isPlaying: nextPlaying }) => {
+      setIsPlaying(nextPlaying);
+    });
+    return () => subscription.remove();
+  }, [player]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (state) => {
@@ -511,13 +806,14 @@ function VideoLayerContent({
         ? trimStartMs + ((requestedTimeMs - trimStartMs) % playableDurationMs)
         : Math.min(requestedTimeMs, trimEndMs);
       player.currentTime = resolvedTimeMs / 1000;
-    } else if (appActive) {
+    } else if (appActive && (animate || manualPlayback)) {
       player.play();
     } else {
       player.pause();
     }
   }, [
     appActive,
+    animate,
     layer.playback.loop,
     layer.playback.muted,
     layer.playback.speed,
@@ -526,6 +822,7 @@ function VideoLayerContent({
     layer.source?.durationMs,
     layer.timing.startMs,
     player,
+    manualPlayback,
     timelineMs,
   ]);
 
@@ -550,6 +847,18 @@ function VideoLayerContent({
           },
         ]}
       />
+      {!isPlaying && !animate && timelineMs === undefined ? (
+        <Pressable
+          accessibilityLabel="Play video"
+          onPress={() => {
+            setManualPlayback(true);
+            player.play();
+          }}
+          style={styles.videoPlayButton}
+        >
+          <Ionicons color={colors.white} name="play" size={22} />
+        </Pressable>
+      ) : null}
     </View>
   );
 }
@@ -780,13 +1089,35 @@ const styles = StyleSheet.create({
   },
   canvas: {
     elevation: 8,
-    overflow: 'hidden',
+    overflow: 'visible',
+    position: 'relative',
     shadowColor: colors.black,
     shadowOffset: { height: 10, width: 0 },
     shadowOpacity: 0.35,
     shadowRadius: 18,
   },
+  editorOverlay: {
+    bottom: 0,
+    left: 0,
+    overflow: 'visible',
+    position: 'absolute',
+    right: 0,
+    top: 0,
+    zIndex: 20,
+  },
+  canvasSurface: {
+    bottom: 0,
+    left: 0,
+    overflow: 'hidden',
+    position: 'absolute',
+    right: 0,
+    top: 0,
+  },
   layer: {
+    position: 'absolute',
+  },
+  layerChrome: {
+    overflow: 'visible',
     position: 'absolute',
   },
   fill: {
@@ -828,21 +1159,18 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     marginTop: 6,
   },
-  videoBadge: {
+  videoPlayButton: {
     alignItems: 'center',
-    backgroundColor: 'rgba(0,0,0,0.55)',
+    backgroundColor: 'rgba(0,0,0,0.62)',
     borderRadius: radius.pill,
-    height: 34,
+    height: 52,
     justifyContent: 'center',
     left: '50%',
-    marginLeft: -17,
-    marginTop: -17,
+    marginLeft: -26,
+    marginTop: -26,
     position: 'absolute',
     top: '50%',
-    width: 34,
-  },
-  videoPoster: {
-    backgroundColor: '#272727',
+    width: 52,
   },
   textFrame: {
     alignItems: 'center',
@@ -862,6 +1190,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: colors.white,
     borderRadius: radius.pill,
+    elevation: 10,
     flexDirection: 'row',
     gap: 18,
     paddingHorizontal: 14,
@@ -869,31 +1198,64 @@ const styles = StyleSheet.create({
     position: 'absolute',
     right: 0,
     top: -48,
+    zIndex: 40,
   },
-  handle: {
+  contextAction: {
+    alignItems: 'center',
+    borderRadius: radius.pill,
+    height: 28,
+    justifyContent: 'center',
+    width: 28,
+  },
+  contextActionActive: {
+    backgroundColor: colors.accent,
+  },
+  handleHit: {
+    alignItems: 'center',
+    height: 44,
+    justifyContent: 'center',
+    position: 'absolute',
+    width: 44,
+    zIndex: 30,
+  },
+  handleHitTopLeft: {
+    left: -22,
+    top: -22,
+  },
+  handleHitTopRight: {
+    right: -22,
+    top: -22,
+  },
+  handleHitBottomLeft: {
+    bottom: -22,
+    left: -22,
+  },
+  handleHitBottomRight: {
+    bottom: -22,
+    right: -22,
+  },
+  handleHitRotation: {
+    left: '50%',
+    marginLeft: -22,
+    top: -58,
+  },
+  handleKnob: {
     backgroundColor: colors.white,
     borderColor: '#BDBDBD',
-    borderRadius: 9,
+    borderRadius: 10,
     borderWidth: 1,
+    elevation: 4,
     height: 18,
-    position: 'absolute',
     width: 18,
   },
-  handleTopLeft: {
-    left: -9,
-    top: -9,
-  },
-  handleTopRight: {
-    right: -9,
-    top: -9,
-  },
-  handleBottomLeft: {
-    bottom: -9,
-    left: -9,
-  },
-  handleBottomRight: {
-    bottom: -9,
-    right: -9,
+  rotationStem: {
+    backgroundColor: colors.white,
+    height: 18,
+    left: '50%',
+    marginLeft: StyleSheet.hairlineWidth / -2,
+    position: 'absolute',
+    top: -18,
+    width: StyleSheet.hairlineWidth,
   },
   gridVertical: {
     backgroundColor: 'rgba(255,255,255,0.35)',
